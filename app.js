@@ -1,4 +1,6 @@
-const STORAGE_KEY = "drypeak-price-list-v3";
+const STORAGE_KEY = "pro-business-price-list-v4";
+const DRAFT_FLAG_KEY = "pro-business-unpublished-v1";
+const ADMIN_KEY = "pro-business-admin-v1";
 const CURRENCY_KEY = "drypeak-currency-v2";
 
 const CATEGORY_LABELS = {
@@ -9,13 +11,7 @@ const CATEGORY_LABELS = {
 
 const CATEGORY_ORDER = ["fruits", "candy", "vegetables"];
 
-/**
- * الأسعار = سعر الكيلو الواحد (جنيه)
- * price1kg  = سعر الكيلو عند شراء ١ كجم
- * price10kg / price30kg = تُضاف لاحقاً (فارغة الآن)
- */
 const DEFAULT_PRODUCTS = [
-  // فواكه
   { id: "f1", name: "مكس فروت", category: "fruits", price1kg: 2200, price10kg: null, price30kg: null, notes: "" },
   { id: "f2", name: "موز شرائح", category: "fruits", price1kg: 1250, price10kg: null, price30kg: null, notes: "" },
   { id: "f3", name: "موز حبة كاملة", category: "fruits", price1kg: 1250, price10kg: null, price30kg: null, notes: "" },
@@ -23,8 +19,6 @@ const DEFAULT_PRODUCTS = [
   { id: "f5", name: "مانجا شرائح", category: "fruits", price1kg: 1900, price10kg: null, price30kg: null, notes: "" },
   { id: "f6", name: "تفاح شرائح", category: "fruits", price1kg: 1850, price10kg: null, price30kg: null, notes: "" },
   { id: "f7", name: "دراجون فروت", category: "fruits", price1kg: 1900, price10kg: null, price30kg: null, notes: "" },
-
-  // حلويات
   { id: "c1", name: "آيس كريم ساندوتش أوريو", category: "candy", price1kg: 1750, price10kg: null, price30kg: null, notes: "" },
   { id: "c2", name: "آيس كريم ساندوتش ميكس", category: "candy", price1kg: 1700, price10kg: null, price30kg: null, notes: "" },
   { id: "c3", name: "آيس كريم شرائح", category: "candy", price1kg: 1800, price10kg: null, price30kg: null, notes: "" },
@@ -34,8 +28,6 @@ const DEFAULT_PRODUCTS = [
   { id: "c7", name: "مارشميلو إسباني", category: "candy", price1kg: 875, price10kg: null, price30kg: null, notes: "" },
   { id: "c8", name: "مارشميلو مجسمات", category: "candy", price1kg: 1500, price10kg: null, price30kg: null, notes: "" },
   { id: "c9", name: "موتشي مقرمش مكس فراولة وفانيليا", category: "candy", price1kg: 1050, price10kg: null, price30kg: null, notes: "" },
-
-  // خضروات
   { id: "v1", name: "ميكس خضار", category: "vegetables", price1kg: 1100, price10kg: null, price30kg: null, notes: "كيس ٣ كجم = ٩٥٠ ج.م للكيلو" },
   { id: "v2", name: "بامية", category: "vegetables", price1kg: 1500, price10kg: null, price30kg: null, notes: "" },
   { id: "v3", name: "بطاطس", category: "vegetables", price1kg: 1500, price10kg: null, price30kg: null, notes: "" },
@@ -45,11 +37,18 @@ const DEFAULT_PRODUCTS = [
   { id: "v7", name: "بصل", category: "vegetables", price1kg: 1600, price10kg: null, price30kg: null, notes: "" },
 ];
 
-let products = loadProductsFromLocal() || structuredClone(DEFAULT_PRODUCTS);
+const isHosted =
+  (location.protocol === "http:" || location.protocol === "https:") &&
+  location.hostname !== "localhost" &&
+  location.hostname !== "127.0.0.1";
+
+let products = structuredClone(DEFAULT_PRODUCTS);
 let activeCategory = "all";
 let searchQuery = "";
 let currency = localStorage.getItem(CURRENCY_KEY) || "EGP";
 let editingId = null;
+let isAdmin = sessionStorage.getItem(ADMIN_KEY) === "1";
+let hasUnpublished = localStorage.getItem(DRAFT_FLAG_KEY) === "1";
 
 const els = {
   list: document.getElementById("productList"),
@@ -66,7 +65,14 @@ const els = {
   price10kg: document.getElementById("price10kg"),
   price30kg: document.getElementById("price30kg"),
   productNotes: document.getElementById("productNotes"),
+  publishBanner: document.getElementById("publishBanner"),
+  adminBtn: document.getElementById("adminBtn"),
+  syncStatus: document.getElementById("syncStatus"),
 };
+
+function getAdminPin() {
+  return window.APP_CONFIG?.adminPin || "pro2026";
+}
 
 function loadProductsFromLocal() {
   try {
@@ -80,8 +86,18 @@ function loadProductsFromLocal() {
   }
 }
 
-function saveProducts() {
+function saveDraft() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+  localStorage.setItem(DRAFT_FLAG_KEY, "1");
+  hasUnpublished = true;
+  updateAdminUI();
+}
+
+function markPublishedLocally() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+  localStorage.removeItem(DRAFT_FLAG_KEY);
+  hasUnpublished = false;
+  updateAdminUI();
 }
 
 async function loadSharedProducts() {
@@ -97,15 +113,39 @@ async function loadSharedProducts() {
 }
 
 async function initProducts() {
-  const local = loadProductsFromLocal();
-  if (local) {
-    products = local;
-    render();
-    return;
+  // Live website: everyone sees the published products.json
+  // Admin with a local draft can keep working on unpublished edits
+  if (isHosted) {
+    if (isAdmin && hasUnpublished && loadProductsFromLocal()) {
+      products = loadProductsFromLocal();
+    } else {
+      products = (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS);
+      hasUnpublished = false;
+    }
+  } else {
+    products =
+      loadProductsFromLocal() ||
+      (await loadSharedProducts()) ||
+      structuredClone(DEFAULT_PRODUCTS);
   }
-  const shared = await loadSharedProducts();
-  products = shared || structuredClone(DEFAULT_PRODUCTS);
+  updateAdminUI();
   render();
+}
+
+function updateAdminUI() {
+  document.querySelectorAll(".admin-only").forEach((el) => {
+    el.classList.toggle("hidden", !isAdmin);
+  });
+  els.adminBtn.textContent = isAdmin ? "خروج الإدارة" : "دخول الإدارة";
+  els.publishBanner.classList.toggle("hidden", !(isAdmin && hasUnpublished));
+  if (isAdmin) {
+    els.syncStatus.textContent = hasUnpublished
+      ? "تعديلاتك محفوظة عندك بس لسه. انشر على الموقع عشان رابط Vercel يتحدث للجميع."
+      : "وضع الإدارة مفتوح. بعد أي تعديل اضغط «نشر على الموقع».";
+  } else {
+    els.syncStatus.textContent =
+      "الزوار يشوفون الأسعار المنشورة على الموقع. التعديلات تظهر للجميع بعد «نشر على الموقع».";
+  }
 }
 
 function hasPrice(value) {
@@ -200,7 +240,7 @@ function createRow(product, delay) {
       <span>سعر الكيلو · ٣٠ كجم</span>
       <strong class="p30"></strong>
     </div>
-    <div class="row-actions">
+    <div class="row-actions admin-only ${isAdmin ? "" : "hidden"}">
       <button type="button" class="icon-btn edit" title="تعديل" aria-label="تعديل المنتج">✎</button>
       <button type="button" class="icon-btn delete" title="حذف" aria-label="حذف المنتج">✕</button>
     </div>
@@ -212,13 +252,16 @@ function createRow(product, delay) {
   row.querySelector(".p10").textContent = formatMoney(product.price10kg);
   row.querySelector(".p30").textContent = formatMoney(product.price30kg);
 
-  row.querySelector(".edit").addEventListener("click", () => openDialog(product));
-  row.querySelector(".delete").addEventListener("click", () => deleteProduct(product.id));
+  const editBtn = row.querySelector(".edit");
+  const deleteBtn = row.querySelector(".delete");
+  if (editBtn) editBtn.addEventListener("click", () => openDialog(product));
+  if (deleteBtn) deleteBtn.addEventListener("click", () => deleteProduct(product.id));
 
   return row;
 }
 
 function openDialog(product = null) {
+  if (!isAdmin) return;
   editingId = product ? product.id : null;
   els.dialogTitle.textContent = product ? "تعديل منتج" : "إضافة منتج";
   els.productId.value = product?.id || "";
@@ -233,11 +276,12 @@ function openDialog(product = null) {
 }
 
 function deleteProduct(id) {
+  if (!isAdmin) return;
   const product = products.find((p) => p.id === id);
   if (!product) return;
   if (!confirm(`حذف «${product.name}»؟`)) return;
   products = products.filter((p) => p.id !== id);
-  saveProducts();
+  saveDraft();
   render();
 }
 
@@ -245,8 +289,20 @@ function uid() {
   return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function downloadProductsJson() {
+  const blob = new Blob([JSON.stringify(products, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "products.json";
+  a.click();
+  URL.revokeObjectURL(url);
+  markPublishedLocally();
+}
+
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
+  if (!isAdmin) return;
   const entry = {
     id: editingId || uid(),
     name: els.productName.value.trim(),
@@ -265,7 +321,7 @@ els.form.addEventListener("submit", (e) => {
     products.push(entry);
   }
 
-  saveProducts();
+  saveDraft();
   els.dialog.close();
   render();
 });
@@ -274,60 +330,56 @@ document.getElementById("cancelBtn").addEventListener("click", () => els.dialog.
 document.getElementById("addProductBtn").addEventListener("click", () => openDialog());
 document.getElementById("printBtn").addEventListener("click", () => window.print());
 
+const adminDialog = document.getElementById("adminDialog");
+const adminError = document.getElementById("adminError");
+const publishDialog = document.getElementById("publishDialog");
+const publishMessage = document.getElementById("publishMessage");
 const exportDialog = document.getElementById("exportDialog");
-const syncDialog = document.getElementById("syncDialog");
-const syncMessage = document.getElementById("syncMessage");
-const importFileInput = document.getElementById("importFileInput");
 
-document.getElementById("syncBtn").addEventListener("click", () => {
-  syncMessage.hidden = true;
-  syncDialog.showModal();
-});
-
-document.getElementById("syncCloseBtn").addEventListener("click", () => syncDialog.close());
-
-document.getElementById("exportBackupBtn").addEventListener("click", () => {
-  const payload = {
-    app: "Pro Business",
-    exportedAt: new Date().toISOString(),
-    products,
-  };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `Pro-Business-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  syncMessage.hidden = false;
-  syncMessage.textContent = "تم التحميل. ابعت الملف للجهاز التاني واستورده من هناك.";
-});
-
-document.getElementById("importBackupBtn").addEventListener("click", () => {
-  importFileInput.click();
-});
-
-importFileInput.addEventListener("change", async () => {
-  const file = importFileInput.files?.[0];
-  if (!file) return;
-  try {
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    const list = Array.isArray(parsed) ? parsed : parsed.products;
-    if (!Array.isArray(list) || list.length === 0) {
-      throw new Error("empty");
-    }
-    products = list;
-    saveProducts();
+els.adminBtn.addEventListener("click", () => {
+  if (isAdmin) {
+    isAdmin = false;
+    sessionStorage.removeItem(ADMIN_KEY);
+    updateAdminUI();
     render();
-    syncMessage.hidden = false;
-    syncMessage.textContent = `تم الاستيراد بنجاح (${list.length} منتج).`;
-  } catch {
-    syncMessage.hidden = false;
-    syncMessage.textContent = "الملف غير صالح. اختار نسخة JSON اتصدّرت من التطبيق.";
-  } finally {
-    importFileInput.value = "";
+    return;
   }
+  adminError.hidden = true;
+  document.getElementById("adminPinInput").value = "";
+  adminDialog.showModal();
+});
+
+document.getElementById("adminCancelBtn").addEventListener("click", () => adminDialog.close());
+
+document.getElementById("adminForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const pin = document.getElementById("adminPinInput").value;
+  if (pin !== getAdminPin()) {
+    adminError.hidden = false;
+    adminError.textContent = "رمز الإدارة غير صحيح.";
+    return;
+  }
+  isAdmin = true;
+  sessionStorage.setItem(ADMIN_KEY, "1");
+  adminDialog.close();
+  updateAdminUI();
+  render();
+});
+
+function openPublishDialog() {
+  publishMessage.hidden = true;
+  publishDialog.showModal();
+}
+
+document.getElementById("publishBtn").addEventListener("click", openPublishDialog);
+document.getElementById("publishNowBtn").addEventListener("click", openPublishDialog);
+document.getElementById("publishCloseBtn").addEventListener("click", () => publishDialog.close());
+
+document.getElementById("downloadProductsJsonBtn").addEventListener("click", () => {
+  downloadProductsJson();
+  publishMessage.hidden = false;
+  publishMessage.textContent =
+    "تم التحميل. ارفع products.json على GitHub مكان الملف القديم، واستنى Vercel يعمل تحديث.";
 });
 
 document.getElementById("exportSheetBtn").addEventListener("click", () => {
@@ -437,4 +489,5 @@ els.currency.addEventListener("change", () => {
   render();
 });
 
+updateAdminUI();
 initProducts();
