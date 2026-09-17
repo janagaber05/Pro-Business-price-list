@@ -45,7 +45,7 @@ const DEFAULT_PRODUCTS = [
   { id: "v7", name: "بصل", category: "vegetables", price1kg: 1600, price10kg: null, price30kg: null, notes: "" },
 ];
 
-let products = loadProducts();
+let products = loadProductsFromLocal() || structuredClone(DEFAULT_PRODUCTS);
 let activeCategory = "all";
 let searchQuery = "";
 let currency = localStorage.getItem(CURRENCY_KEY) || "EGP";
@@ -68,20 +68,44 @@ const els = {
   productNotes: document.getElementById("productNotes"),
 };
 
-function loadProducts() {
+function loadProductsFromLocal() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return structuredClone(DEFAULT_PRODUCTS);
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return structuredClone(DEFAULT_PRODUCTS);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
     return parsed;
   } catch {
-    return structuredClone(DEFAULT_PRODUCTS);
+    return null;
   }
 }
 
 function saveProducts() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+}
+
+async function loadSharedProducts() {
+  try {
+    const res = await fetch(`products.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const parsed = await res.json();
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function initProducts() {
+  const local = loadProductsFromLocal();
+  if (local) {
+    products = local;
+    render();
+    return;
+  }
+  const shared = await loadSharedProducts();
+  products = shared || structuredClone(DEFAULT_PRODUCTS);
+  render();
 }
 
 function hasPrice(value) {
@@ -251,6 +275,60 @@ document.getElementById("addProductBtn").addEventListener("click", () => openDia
 document.getElementById("printBtn").addEventListener("click", () => window.print());
 
 const exportDialog = document.getElementById("exportDialog");
+const syncDialog = document.getElementById("syncDialog");
+const syncMessage = document.getElementById("syncMessage");
+const importFileInput = document.getElementById("importFileInput");
+
+document.getElementById("syncBtn").addEventListener("click", () => {
+  syncMessage.hidden = true;
+  syncDialog.showModal();
+});
+
+document.getElementById("syncCloseBtn").addEventListener("click", () => syncDialog.close());
+
+document.getElementById("exportBackupBtn").addEventListener("click", () => {
+  const payload = {
+    app: "Pro Business",
+    exportedAt: new Date().toISOString(),
+    products,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Pro-Business-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  syncMessage.hidden = false;
+  syncMessage.textContent = "تم التحميل. ابعت الملف للجهاز التاني واستورده من هناك.";
+});
+
+document.getElementById("importBackupBtn").addEventListener("click", () => {
+  importFileInput.click();
+});
+
+importFileInput.addEventListener("change", async () => {
+  const file = importFileInput.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const list = Array.isArray(parsed) ? parsed : parsed.products;
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error("empty");
+    }
+    products = list;
+    saveProducts();
+    render();
+    syncMessage.hidden = false;
+    syncMessage.textContent = `تم الاستيراد بنجاح (${list.length} منتج).`;
+  } catch {
+    syncMessage.hidden = false;
+    syncMessage.textContent = "الملف غير صالح. اختار نسخة JSON اتصدّرت من التطبيق.";
+  } finally {
+    importFileInput.value = "";
+  }
+});
 
 document.getElementById("exportSheetBtn").addEventListener("click", () => {
   exportDialog.showModal();
@@ -359,4 +437,4 @@ els.currency.addEventListener("change", () => {
   render();
 });
 
-render();
+initProducts();

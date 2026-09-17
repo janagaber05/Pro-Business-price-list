@@ -19,6 +19,7 @@
       <p class="brand-tag">فواكه مجففة بالتجميد · حلويات · خضروات</p>
     </div>
     <div class="header-actions">
+      <button type="button" class="btn btn-ghost" id="syncBtn" title="نقل الأسعار بين الأجهزة">مزامنة الأجهزة</button>
       <button type="button" class="btn btn-ghost" id="exportSheetBtn" title="تحميل جدول إكسل">مشاركة الجدول</button>
       <button type="button" class="btn btn-ghost" id="printBtn">طباعة</button>
       <button type="button" class="btn btn-primary" id="addProductBtn">إضافة منتج</button>
@@ -60,8 +61,31 @@
   </main>
 
   <footer class="site-footer">
-    <p>الأسعار محفوظة في هذا المتصفح. استخدم «مشاركة الجدول» لإرسال القائمة على إكسل أو واتساب.</p>
+    <p id="syncStatus">التعديلات تُحفظ على هذا الجهاز فقط. استخدم «مزامنة الأجهزة» لنقلها لجهاز تاني.</p>
   </footer>
+
+  <!-- Sync devices modal -->
+  <dialog id="syncDialog" class="modal">
+    <div class="export-panel">
+      <h2>مزامنة بين الأجهزة</h2>
+      <p class="export-hint">
+        المتصفح بيحفظ التعديلات على الجهاز الحالي بس. عشان الجهاز التاني يشوف نفس الأسعار:
+        صدّر نسخة من هنا ← ابعتها لنفسك (واتساب/درايف) ← استوردها على الجهاز التاني.
+      </p>
+
+      <div class="sync-actions">
+        <button type="button" class="btn btn-primary" id="exportBackupBtn">تصدير نسخة كاملة (JSON)</button>
+        <button type="button" class="btn btn-ghost" id="importBackupBtn">استيراد نسخة من جهاز تاني</button>
+        <input type="file" id="importFileInput" accept=".json,application/json" class="hidden" />
+      </div>
+
+      <p class="export-hint" id="syncMessage" hidden></p>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="syncCloseBtn">إغلاق</button>
+      </div>
+    </div>
+  </dialog>
 
   <!-- Export sheet modal -->
   <dialog id="exportDialog" class="modal">

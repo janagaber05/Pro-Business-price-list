@@ -490,6 +490,29 @@ main,
   accent-color: var(--accent);
 }
 
+.sync-actions {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.sync-actions .btn {
+  width: 100%;
+  justify-content: center;
+  text-align: center;
+}
+
+#syncMessage {
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  background: rgba(47, 107, 79, 0.1);
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+#syncMessage[hidden] {
+  display: none;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
