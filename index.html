@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pro Business — قائمة الأسعار</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+  <div class="bg-pattern" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <div class="brand-block">
+      <p class="brand">Pro Business</p>
+      <p class="brand-tag">فواكه مجففة بالتجميد · حلويات · خضروات</p>
+    </div>
+    <div class="header-actions">
+      <button type="button" class="btn btn-ghost" id="exportSheetBtn" title="تحميل جدول إكسل">مشاركة الجدول</button>
+      <button type="button" class="btn btn-ghost" id="printBtn">طباعة</button>
+      <button type="button" class="btn btn-primary" id="addProductBtn">إضافة منتج</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="toolbar" aria-label="تصفية">
+      <div class="search-wrap">
+        <label class="sr-only" for="searchInput">بحث عن منتج</label>
+        <input type="search" id="searchInput" placeholder="ابحث عن منتج…" autocomplete="off" />
+      </div>
+      <div class="category-tabs" role="tablist" aria-label="التصنيف">
+        <button type="button" class="tab active" data-category="all" role="tab" aria-selected="true">الكل</button>
+        <button type="button" class="tab" data-category="fruits" role="tab" aria-selected="false">فواكه</button>
+        <button type="button" class="tab" data-category="candy" role="tab" aria-selected="false">حلويات</button>
+        <button type="button" class="tab" data-category="vegetables" role="tab" aria-selected="false">خضروات</button>
+      </div>
+      <div class="currency-wrap">
+        <label for="currencySelect">العملة</label>
+        <select id="currencySelect">
+          <option value="EGP">جنيه مصري (EGP)</option>
+          <option value="$">دولار ($)</option>
+          <option value="€">يورو (€)</option>
+          <option value="£">جنيه استرليني (£)</option>
+          <option value="₪">شيكل (₪)</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="price-legend" aria-label="توضيح الأسعار">
+      <p><strong>١ كجم</strong> — سعر الكيلو عند شراء ١ كجم</p>
+      <p><strong>١٠ كجم</strong> — سعر الكيلو عند شراء ١٠ كجم</p>
+      <p><strong>٣٠ كجم</strong> — سعر الكيلو عند شراء ٣٠ كجم</p>
+    </section>
+
+    <section id="productList" class="product-list" aria-live="polite"></section>
+    <p id="emptyState" class="empty-state hidden">لا توجد منتجات مطابقة لبحثك.</p>
+  </main>
+
+  <footer class="site-footer">
+    <p>الأسعار محفوظة في هذا المتصفح. استخدم «مشاركة الجدول» لإرسال القائمة على إكسل أو واتساب.</p>
+  </footer>
+
+  <!-- Export sheet modal -->
+  <dialog id="exportDialog" class="modal">
+    <div class="export-panel">
+      <h2>مشاركة قائمة الأسعار</h2>
+      <p class="export-hint">حمّل جدولاً يفتح في إكسل أو Google Sheets لإرساله للعملاء. السعر المعروض هو سعر الكيلو الواحد.</p>
+
+      <fieldset class="export-options">
+        <legend>أي قائمة؟</legend>
+        <label class="export-choice">
+          <input type="radio" name="exportPack" value="1kg" checked />
+          <span><strong>١ كجم فقط</strong> — المنتج + سعر الكيلو</span>
+        </label>
+        <label class="export-choice">
+          <input type="radio" name="exportPack" value="10kg" />
+          <span><strong>١٠ كجم فقط</strong> — المنتج + سعر الكيلو عند ١٠ كجم</span>
+        </label>
+        <label class="export-choice">
+          <input type="radio" name="exportPack" value="30kg" />
+          <span><strong>٣٠ كجم فقط</strong> — المنتج + سعر الكيلو عند ٣٠ كجم</span>
+        </label>
+        <label class="export-choice">
+          <input type="radio" name="exportPack" value="all" />
+          <span><strong>القائمة كاملة</strong> — أسعار الكيلو لـ ١ و ١٠ و ٣٠ معاً</span>
+        </label>
+      </fieldset>
+
+      <label class="export-scope">
+        <input type="checkbox" id="exportFiltered" />
+        المنتجات الظاهرة فقط (حسب البحث / التصنيف الحالي)
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="exportCancelBtn">إلغاء</button>
+        <button type="button" class="btn btn-primary" id="exportDownloadBtn">تحميل الجدول</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Add / Edit modal -->
+  <dialog id="productDialog" class="modal">
+    <form method="dialog" id="productForm">
+      <h2 id="dialogTitle">إضافة منتج</h2>
+      <input type="hidden" id="productId" />
+
+      <label>
+        اسم المنتج
+        <input type="text" id="productName" required maxlength="80" placeholder="مثال: فراولة مجففة بالتجميد" />
+      </label>
+
+      <label>
+        التصنيف
+        <select id="productCategory" required>
+          <option value="fruits">فواكه</option>
+          <option value="candy">حلويات</option>
+          <option value="vegetables">خضروات</option>
+        </select>
+      </label>
+
+      <div class="price-fields">
+        <label>
+          سعر الكيلو (١ كجم)
+          <input type="number" id="price1kg" required min="0" step="0.01" placeholder="0.00" />
+        </label>
+        <label>
+          سعر الكيلو (عند ١٠ كجم) <span class="optional">(اختياري)</span>
+          <input type="number" id="price10kg" min="0" step="0.01" placeholder="لاحقاً" />
+        </label>
+        <label>
+          سعر الكيلو (عند ٣٠ كجم) <span class="optional">(اختياري)</span>
+          <input type="number" id="price30kg" min="0" step="0.01" placeholder="لاحقاً" />
+        </label>
+      </div>
+
+      <label>
+        ملاحظات <span class="optional">(اختياري)</span>
+        <input type="text" id="productNotes" maxlength="120" placeholder="مثال: قطع كاملة بدون سكر" />
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="cancelBtn">إلغاء</button>
+        <button type="submit" class="btn btn-primary" id="saveBtn">حفظ</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
