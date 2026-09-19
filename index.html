@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pro Business — قائمة الأسعار</title>
+  <title>Pro Business — نظام الأسعار والمخزون</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -14,15 +14,14 @@
   <div class="bg-pattern" aria-hidden="true"></div>
 
   <div id="setupBanner" class="publish-banner hidden" role="status">
-    <p>التحديث اللحظي مش مفعّل لسه. فعّل Firebase مرة واحدة من ملف config.js عشان أي تعديل يظهر للجميع على طول.</p>
+    <p>Supabase مش مفعّل لسه — النظام شغال محلياً. عشان الكل يشوف نفس المخزون والطلبات، فعّل Supabase من config.js.</p>
   </div>
-
-  <div id="saveToast" class="save-toast hidden" role="status">تم الحفظ — ظاهر للجميع الآن</div>
+  <div id="saveToast" class="save-toast hidden" role="status"></div>
 
   <header class="site-header">
     <div class="brand-block">
       <p class="brand">Pro Business</p>
-      <p class="brand-tag">فواكه مجففة بالتجميد · حلويات · خضروات</p>
+      <p class="brand-tag">أسعار · مخزون · طلبات · استيراد ذكي</p>
     </div>
     <div class="header-actions">
       <button type="button" class="btn btn-ghost" id="adminBtn">دخول الإدارة</button>
@@ -32,49 +31,133 @@
     </div>
   </header>
 
+  <nav class="main-nav" aria-label="الأقسام">
+    <button type="button" class="nav-tab active" data-view="products">المنتجات والأسعار</button>
+    <button type="button" class="nav-tab" data-view="orders">الطلبات والمخزون</button>
+    <button type="button" class="nav-tab" data-view="import">استيراد Excel بالذكاء</button>
+  </nav>
+
   <main>
-    <section class="toolbar" aria-label="تصفية">
-      <div class="search-wrap">
-        <label class="sr-only" for="searchInput">بحث عن منتج</label>
-        <input type="search" id="searchInput" placeholder="ابحث عن منتج…" autocomplete="off" />
+    <!-- PRODUCTS VIEW -->
+    <section id="view-products" class="view">
+      <div class="toolbar" aria-label="تصفية">
+        <div class="search-wrap">
+          <label class="sr-only" for="searchInput">بحث عن منتج</label>
+          <input type="search" id="searchInput" placeholder="ابحث عن منتج…" autocomplete="off" />
+        </div>
+        <div class="category-tabs" role="tablist" aria-label="التصنيف">
+          <button type="button" class="tab active" data-category="all" role="tab" aria-selected="true">الكل</button>
+          <button type="button" class="tab" data-category="fruits" role="tab" aria-selected="false">فواكه</button>
+          <button type="button" class="tab" data-category="candy" role="tab" aria-selected="false">حلويات</button>
+          <button type="button" class="tab" data-category="vegetables" role="tab" aria-selected="false">خضروات</button>
+        </div>
+        <div class="currency-wrap">
+          <label for="currencySelect">العملة</label>
+          <select id="currencySelect">
+            <option value="EGP">جنيه مصري (EGP)</option>
+            <option value="$">دولار ($)</option>
+            <option value="€">يورو (€)</option>
+            <option value="£">جنيه استرليني (£)</option>
+            <option value="₪">شيكل (₪)</option>
+          </select>
+        </div>
       </div>
-      <div class="category-tabs" role="tablist" aria-label="التصنيف">
-        <button type="button" class="tab active" data-category="all" role="tab" aria-selected="true">الكل</button>
-        <button type="button" class="tab" data-category="fruits" role="tab" aria-selected="false">فواكه</button>
-        <button type="button" class="tab" data-category="candy" role="tab" aria-selected="false">حلويات</button>
-        <button type="button" class="tab" data-category="vegetables" role="tab" aria-selected="false">خضروات</button>
+
+      <section class="price-legend" aria-label="توضيح الأسعار">
+        <p><strong>١ / ١٠ / ٣٠ كجم</strong> — سعر الكيلو حسب كمية الطلب</p>
+        <p><strong>المخزون</strong> — الكمية المتوفرة حالياً (كجم)</p>
+      </section>
+
+      <section id="productList" class="product-list" aria-live="polite"></section>
+      <p id="emptyState" class="empty-state hidden">لا توجد منتجات مطابقة لبحثك.</p>
+    </section>
+
+    <!-- ORDERS VIEW -->
+    <section id="view-orders" class="view hidden">
+      <div class="panel">
+        <h2>تسجيل حركة مخزون</h2>
+        <p class="panel-hint">خصم عند البيع/الاستخدام، أو إضافة عند الشراء/الإنتاج.</p>
+        <form id="orderForm" class="order-form">
+          <label>
+            المنتج
+            <select id="orderProduct" required></select>
+          </label>
+          <label>
+            نوع الحركة
+            <select id="orderType" required>
+              <option value="out">خصم من المخزون (بيع / استخدام)</option>
+              <option value="in">إضافة للمخزون (شراء / توريد)</option>
+            </select>
+          </label>
+          <label>
+            الكمية (كجم)
+            <input type="number" id="orderQty" required min="0.01" step="0.01" placeholder="0" />
+          </label>
+          <label>
+            ملاحظة <span class="optional">(اختياري)</span>
+            <input type="text" id="orderNote" maxlength="120" placeholder="مثال: طلب عميل أحمد" />
+          </label>
+          <button type="submit" class="btn btn-primary admin-only hidden" id="orderSubmitBtn">تنفيذ الحركة</button>
+          <p class="panel-hint admin-needed" id="orderAdminHint">سجّل دخول الإدارة عشان تسجّل طلبات.</p>
+        </form>
       </div>
-      <div class="currency-wrap">
-        <label for="currencySelect">العملة</label>
-        <select id="currencySelect">
-          <option value="EGP">جنيه مصري (EGP)</option>
-          <option value="$">دولار ($)</option>
-          <option value="€">يورو (€)</option>
-          <option value="£">جنيه استرليني (£)</option>
-          <option value="₪">شيكل (₪)</option>
-        </select>
+
+      <div class="panel">
+        <h2>آخر الحركات</h2>
+        <div id="ordersList" class="orders-list"></div>
+        <p id="ordersEmpty" class="empty-state hidden">لا توجد حركات بعد.</p>
       </div>
     </section>
 
-    <section class="price-legend" aria-label="توضيح الأسعار">
-      <p><strong>١ كجم</strong> — سعر الكيلو عند شراء ١ كجم</p>
-      <p><strong>١٠ كجم</strong> — سعر الكيلو عند شراء ١٠ كجم</p>
-      <p><strong>٣٠ كجم</strong> — سعر الكيلو عند شراء ٣٠ كجم</p>
+    <!-- IMPORT VIEW -->
+    <section id="view-import" class="view hidden">
+      <div class="panel">
+        <h2>استيراد ذكي من Excel</h2>
+        <p class="panel-hint">
+          ارفع ملف Excel أو CSV فيه الأسعار والكميات. النظام هيكتشف الأعمدة تلقائياً
+          (اسم المنتج، سعر ١/١٠/٣٠ كجم، الكمية، التصنيف) ويعرض معاينة قبل الحفظ.
+        </p>
+        <div class="import-box admin-only hidden">
+          <input type="file" id="importFile" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" />
+          <p class="panel-hint">الأعمدة المدعومة بالعربي أو الإنجليزي: المنتج، التصنيف، سعر ١ كجم، ١٠ كجم، ٣٠ كجم، الكمية، ملاحظات</p>
+        </div>
+        <p class="panel-hint admin-needed" id="importAdminHint">سجّل دخول الإدارة عشان تستورد ملف.</p>
+        <div id="importPreviewWrap" class="hidden">
+          <h3>معاينة الاستيراد (<span id="importCount">0</span> صف)</h3>
+          <div class="table-scroll">
+            <table class="import-table" id="importTable">
+              <thead>
+                <tr>
+                  <th>المنتج</th>
+                  <th>التصنيف</th>
+                  <th>١ كجم</th>
+                  <th>١٠ كجم</th>
+                  <th>٣٠ كجم</th>
+                  <th>الكمية</th>
+                  <th>الحالة</th>
+                </tr>
+              </thead>
+              <tbody id="importTableBody"></tbody>
+            </table>
+          </div>
+          <div class="modal-actions" style="justify-content:flex-start;margin-top:1rem">
+            <button type="button" class="btn btn-primary" id="confirmImportBtn">تطبيق على النظام</button>
+            <button type="button" class="btn btn-ghost" id="cancelImportBtn">إلغاء</button>
+          </div>
+        </div>
+      </div>
     </section>
-
-    <section id="productList" class="product-list" aria-live="polite"></section>
-    <p id="emptyState" class="empty-state hidden">لا توجد منتجات مطابقة لبحثك.</p>
   </main>
 
   <footer class="site-footer">
-    <p id="syncStatus">جاري تحميل الأسعار…</p>
+    <p id="syncStatus">جاري التحميل…</p>
   </footer>
 
   <!-- Admin login -->
   <dialog id="adminDialog" class="modal">
     <form method="dialog" id="adminForm" class="export-panel">
       <h2>دخول الإدارة</h2>
-      <p class="export-hint">أدخل رمز الإدارة لتعديل الأسعار. بعد الحفظ تظهر للجميع مباشرة (إذا كان التحديث اللحظي مفعّل).</p>
+      <p class="export-hint">رمز الإدارة مطلوب للتعديل والطلبات والاستيراد.</p>
       <label>
         رمز الإدارة
         <input type="password" id="adminPinInput" required autocomplete="current-password" />
@@ -91,33 +174,15 @@
   <dialog id="exportDialog" class="modal">
     <div class="export-panel">
       <h2>مشاركة قائمة الأسعار</h2>
-      <p class="export-hint">حمّل جدولاً يفتح في إكسل أو Google Sheets لإرساله للعملاء.</p>
-
+      <p class="export-hint">حمّل جدولاً لإرساله للعملاء (إكسل / Google Sheets).</p>
       <fieldset class="export-options">
         <legend>أي قائمة؟</legend>
-        <label class="export-choice">
-          <input type="radio" name="exportPack" value="1kg" checked />
-          <span><strong>١ كجم فقط</strong></span>
-        </label>
-        <label class="export-choice">
-          <input type="radio" name="exportPack" value="10kg" />
-          <span><strong>١٠ كجم فقط</strong></span>
-        </label>
-        <label class="export-choice">
-          <input type="radio" name="exportPack" value="30kg" />
-          <span><strong>٣٠ كجم فقط</strong></span>
-        </label>
-        <label class="export-choice">
-          <input type="radio" name="exportPack" value="all" />
-          <span><strong>القائمة كاملة</strong></span>
-        </label>
+        <label class="export-choice"><input type="radio" name="exportPack" value="1kg" checked /> <span><strong>١ كجم فقط</strong></span></label>
+        <label class="export-choice"><input type="radio" name="exportPack" value="10kg" /> <span><strong>١٠ كجم فقط</strong></span></label>
+        <label class="export-choice"><input type="radio" name="exportPack" value="30kg" /> <span><strong>٣٠ كجم فقط</strong></span></label>
+        <label class="export-choice"><input type="radio" name="exportPack" value="all" /> <span><strong>كاملة + الكمية</strong></span></label>
       </fieldset>
-
-      <label class="export-scope">
-        <input type="checkbox" id="exportFiltered" />
-        المنتجات الظاهرة فقط
-      </label>
-
+      <label class="export-scope"><input type="checkbox" id="exportFiltered" /> المنتجات الظاهرة فقط</label>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="exportCancelBtn">إلغاء</button>
         <button type="button" class="btn btn-primary" id="exportDownloadBtn">تحميل الجدول</button>
@@ -125,17 +190,14 @@
     </div>
   </dialog>
 
-  <!-- Add / Edit modal -->
+  <!-- Add / Edit product -->
   <dialog id="productDialog" class="modal">
     <form method="dialog" id="productForm">
       <h2 id="dialogTitle">إضافة منتج</h2>
-      <input type="hidden" id="productId" />
-
       <label>
         اسم المنتج
-        <input type="text" id="productName" required maxlength="80" placeholder="مثال: فراولة مجففة بالتجميد" />
+        <input type="text" id="productName" required maxlength="80" />
       </label>
-
       <label>
         التصنيف
         <select id="productCategory" required>
@@ -144,36 +206,28 @@
           <option value="vegetables">خضروات</option>
         </select>
       </label>
-
       <div class="price-fields">
-        <label>
-          سعر الكيلو (١ كجم)
-          <input type="number" id="price1kg" required min="0" step="0.01" placeholder="0.00" />
-        </label>
-        <label>
-          سعر الكيلو (عند ١٠ كجم) <span class="optional">(اختياري)</span>
-          <input type="number" id="price10kg" min="0" step="0.01" placeholder="لاحقاً" />
-        </label>
-        <label>
-          سعر الكيلو (عند ٣٠ كجم) <span class="optional">(اختياري)</span>
-          <input type="number" id="price30kg" min="0" step="0.01" placeholder="لاحقاً" />
-        </label>
+        <label>سعر الكيلو (١ كجم)<input type="number" id="price1kg" required min="0" step="0.01" /></label>
+        <label>سعر الكيلو (١٠ كجم) <span class="optional">(اختياري)</span><input type="number" id="price10kg" min="0" step="0.01" /></label>
+        <label>سعر الكيلو (٣٠ كجم) <span class="optional">(اختياري)</span><input type="number" id="price30kg" min="0" step="0.01" /></label>
       </div>
-
+      <label>
+        الكمية المتوفرة (كجم)
+        <input type="number" id="productQty" min="0" step="0.01" value="0" />
+      </label>
       <label>
         ملاحظات <span class="optional">(اختياري)</span>
-        <input type="text" id="productNotes" maxlength="120" placeholder="مثال: قطع كاملة بدون سكر" />
+        <input type="text" id="productNotes" maxlength="120" />
       </label>
-
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="cancelBtn">إلغاء</button>
-        <button type="submit" class="btn btn-primary" id="saveBtn">حفظ</button>
+        <button type="submit" class="btn btn-primary">حفظ</button>
       </div>
     </form>
   </dialog>
 
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>

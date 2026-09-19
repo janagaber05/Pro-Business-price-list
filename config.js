@@ -1,28 +1,19 @@
 /* ========= Pro Business settings =========
  *
- * EASY LIVE UPDATES (recommended):
- * 1) Create a free Firebase project: https://console.firebase.google.com
- * 2) Add a Web app → copy the firebaseConfig object
- * 3) Paste it below under `firebase`
- * 4) Realtime Database → Create Database → start in test mode
- * 5) Set enabled: true
- * 6) Redeploy / refresh Vercel
+ * SUPABASE (recommended for stock + orders + Excel import):
+ * 1) https://supabase.com → New project
+ * 2) SQL Editor → paste supabase-schema.sql → Run
+ * 3) Project Settings → API → copy Project URL + anon public key
+ * 4) Paste below, set enabled: true, push to GitHub / redeploy Vercel
  *
- * Then: Admin login → edit → Save = live for everyone. No GitHub upload.
+ * Until Supabase is enabled, the app still works on this device (local save).
  */
 window.APP_CONFIG = {
   adminPin: "pro2026",
 
-  // Set to true after you paste your Firebase config
+  // Set true after pasting Supabase keys
   enabled: false,
 
-  firebase: {
-    apiKey: "PASTE_API_KEY",
-    authDomain: "PASTE_PROJECT.firebaseapp.com",
-    databaseURL: "https://PASTE_PROJECT-default-rtdb.firebaseio.com",
-    projectId: "PASTE_PROJECT",
-    storageBucket: "PASTE_PROJECT.appspot.com",
-    messagingSenderId: "PASTE_SENDER_ID",
-    appId: "PASTE_APP_ID",
-  },
+  supabaseUrl: "https://YOUR_PROJECT.supabase.co",
+  supabaseAnonKey: "YOUR_ANON_KEY",
 };
