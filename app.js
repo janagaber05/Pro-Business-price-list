@@ -1,7 +1,7 @@
 const STORAGE_KEY = "pro-business-price-list-v4";
-const DRAFT_FLAG_KEY = "pro-business-unpublished-v1";
 const ADMIN_KEY = "pro-business-admin-v1";
 const CURRENCY_KEY = "drypeak-currency-v2";
+const CLOUD_PATH = "products";
 
 const CATEGORY_LABELS = {
   fruits: "فواكه",
@@ -37,18 +37,15 @@ const DEFAULT_PRODUCTS = [
   { id: "v7", name: "بصل", category: "vegetables", price1kg: 1600, price10kg: null, price30kg: null, notes: "" },
 ];
 
-const isHosted =
-  (location.protocol === "http:" || location.protocol === "https:") &&
-  location.hostname !== "localhost" &&
-  location.hostname !== "127.0.0.1";
-
 let products = structuredClone(DEFAULT_PRODUCTS);
 let activeCategory = "all";
 let searchQuery = "";
 let currency = localStorage.getItem(CURRENCY_KEY) || "EGP";
 let editingId = null;
 let isAdmin = sessionStorage.getItem(ADMIN_KEY) === "1";
-let hasUnpublished = localStorage.getItem(DRAFT_FLAG_KEY) === "1";
+let db = null;
+let cloudReady = false;
+let applyingRemote = false;
 
 const els = {
   list: document.getElementById("productList"),
@@ -65,7 +62,8 @@ const els = {
   price10kg: document.getElementById("price10kg"),
   price30kg: document.getElementById("price30kg"),
   productNotes: document.getElementById("productNotes"),
-  publishBanner: document.getElementById("publishBanner"),
+  setupBanner: document.getElementById("setupBanner"),
+  saveToast: document.getElementById("saveToast"),
   adminBtn: document.getElementById("adminBtn"),
   syncStatus: document.getElementById("syncStatus"),
 };
@@ -74,30 +72,42 @@ function getAdminPin() {
   return window.APP_CONFIG?.adminPin || "pro2026";
 }
 
-function loadProductsFromLocal() {
+function isCloudConfigured() {
+  const cfg = window.APP_CONFIG;
+  if (!cfg?.enabled) return false;
+  const f = cfg.firebase || {};
+  return Boolean(
+    f.apiKey &&
+      f.databaseURL &&
+      !String(f.apiKey).includes("PASTE") &&
+      !String(f.databaseURL).includes("PASTE")
+  );
+}
+
+function initCloud() {
+  if (!isCloudConfigured() || typeof firebase === "undefined") {
+    cloudReady = false;
+    return false;
+  }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    return parsed;
-  } catch {
-    return null;
+    if (!firebase.apps.length) {
+      firebase.initializeApp(window.APP_CONFIG.firebase);
+    }
+    db = firebase.database();
+    cloudReady = true;
+    return true;
+  } catch (err) {
+    console.error(err);
+    cloudReady = false;
+    return false;
   }
 }
 
-function saveDraft() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-  localStorage.setItem(DRAFT_FLAG_KEY, "1");
-  hasUnpublished = true;
-  updateAdminUI();
-}
-
-function markPublishedLocally() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-  localStorage.removeItem(DRAFT_FLAG_KEY);
-  hasUnpublished = false;
-  updateAdminUI();
+function normalizeList(value) {
+  if (!value) return null;
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object") return Object.values(value);
+  return null;
 }
 
 async function loadSharedProducts() {
@@ -105,30 +115,104 @@ async function loadSharedProducts() {
     const res = await fetch(`products.json?t=${Date.now()}`, { cache: "no-store" });
     if (!res.ok) return null;
     const parsed = await res.json();
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    return parsed;
+    return Array.isArray(parsed) && parsed.length ? parsed : null;
   } catch {
     return null;
   }
 }
 
-async function initProducts() {
-  // Live website: everyone sees the published products.json
-  // Admin with a local draft can keep working on unpublished edits
-  if (isHosted) {
-    if (isAdmin && hasUnpublished && loadProductsFromLocal()) {
-      products = loadProductsFromLocal();
-    } else {
-      products = (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS);
-      hasUnpublished = false;
+function loadLocalDraft() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function showToast(message) {
+  els.saveToast.textContent = message;
+  els.saveToast.classList.remove("hidden");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => els.saveToast.classList.add("hidden"), 2500);
+}
+
+async function persistProducts({ showSuccess = true } = {}) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+
+  if (cloudReady && db) {
+    applyingRemote = true;
+    try {
+      await db.ref(CLOUD_PATH).set(products);
+      if (showSuccess) showToast("تم الحفظ — ظاهر للجميع الآن");
+      updateStatusUI();
+      return true;
+    } catch (err) {
+      console.error(err);
+      alert("تعذر الحفظ على السحابة. تأكد من إعداد Firebase وقواعد الكتابة.");
+      return false;
+    } finally {
+      setTimeout(() => {
+        applyingRemote = false;
+      }, 300);
     }
+  }
+
+  if (showSuccess) {
+    showToast("تم الحفظ على هذا الجهاز فقط (السحابة غير مفعّلة)");
+  }
+  updateStatusUI();
+  return false;
+}
+
+function subscribeCloud() {
+  if (!cloudReady || !db) return;
+  db.ref(CLOUD_PATH).on(
+    "value",
+    (snap) => {
+      if (applyingRemote) return;
+      const list = normalizeList(snap.val());
+      if (list && list.length) {
+        products = list;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+        render();
+        updateStatusUI();
+      }
+    },
+    (err) => console.error(err)
+  );
+}
+
+async function seedCloudIfEmpty() {
+  if (!cloudReady || !db) return;
+  const snap = await db.ref(CLOUD_PATH).once("value");
+  if (snap.exists()) return;
+  const seed = (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS);
+  products = seed;
+  await db.ref(CLOUD_PATH).set(seed);
+}
+
+async function initProducts() {
+  const hasCloud = initCloud();
+  els.setupBanner.classList.toggle("hidden", hasCloud);
+
+  if (hasCloud) {
+    await seedCloudIfEmpty();
+    const snap = await db.ref(CLOUD_PATH).once("value");
+    const list = normalizeList(snap.val());
+    products = list && list.length ? list : structuredClone(DEFAULT_PRODUCTS);
+    subscribeCloud();
   } else {
     products =
-      loadProductsFromLocal() ||
+      loadLocalDraft() ||
       (await loadSharedProducts()) ||
       structuredClone(DEFAULT_PRODUCTS);
   }
+
   updateAdminUI();
+  updateStatusUI();
   render();
 }
 
@@ -137,14 +221,17 @@ function updateAdminUI() {
     el.classList.toggle("hidden", !isAdmin);
   });
   els.adminBtn.textContent = isAdmin ? "خروج الإدارة" : "دخول الإدارة";
-  els.publishBanner.classList.toggle("hidden", !(isAdmin && hasUnpublished));
-  if (isAdmin) {
-    els.syncStatus.textContent = hasUnpublished
-      ? "تعديلاتك محفوظة عندك بس لسه. انشر على الموقع عشان رابط Vercel يتحدث للجميع."
-      : "وضع الإدارة مفتوح. بعد أي تعديل اضغط «نشر على الموقع».";
+}
+
+function updateStatusUI() {
+  if (cloudReady) {
+    els.syncStatus.textContent = isAdmin
+      ? "التحديث اللحظي شغال: أي حفظ يظهر فوراً لكل من يفتح الرابط."
+      : "الأسعار متزامنة لحظياً من السحابة.";
   } else {
-    els.syncStatus.textContent =
-      "الزوار يشوفون الأسعار المنشورة على الموقع. التعديلات تظهر للجميع بعد «نشر على الموقع».";
+    els.syncStatus.textContent = isAdmin
+      ? "السحابة غير مفعّلة — الحفظ محلي فقط. فعّل Firebase من config.js."
+      : "يتم عرض القائمة المنشورة. التحديث اللحظي غير مفعّل بعد.";
   }
 }
 
@@ -188,7 +275,6 @@ function render() {
   const items = filteredProducts();
   els.empty.classList.toggle("hidden", items.length > 0);
   els.list.innerHTML = "";
-
   if (items.length === 0) return;
 
   const groups =
@@ -209,7 +295,6 @@ function render() {
       els.list.appendChild(h);
       delay += 0.03;
     }
-
     for (const product of group.items) {
       els.list.appendChild(createRow(product, delay));
       delay += 0.03;
@@ -221,7 +306,6 @@ function createRow(product, delay) {
   const row = document.createElement("article");
   row.className = "product-row";
   row.style.animationDelay = `${delay}s`;
-  row.dataset.id = product.id;
 
   row.innerHTML = `
     <div class="product-info">
@@ -256,7 +340,6 @@ function createRow(product, delay) {
   const deleteBtn = row.querySelector(".delete");
   if (editBtn) editBtn.addEventListener("click", () => openDialog(product));
   if (deleteBtn) deleteBtn.addEventListener("click", () => deleteProduct(product.id));
-
   return row;
 }
 
@@ -264,7 +347,6 @@ function openDialog(product = null) {
   if (!isAdmin) return;
   editingId = product ? product.id : null;
   els.dialogTitle.textContent = product ? "تعديل منتج" : "إضافة منتج";
-  els.productId.value = product?.id || "";
   els.productName.value = product?.name || "";
   els.productCategory.value = product?.category || "fruits";
   els.price1kg.value = hasPrice(product?.price1kg) ? product.price1kg : "";
@@ -275,13 +357,13 @@ function openDialog(product = null) {
   els.productName.focus();
 }
 
-function deleteProduct(id) {
+async function deleteProduct(id) {
   if (!isAdmin) return;
   const product = products.find((p) => p.id === id);
   if (!product) return;
   if (!confirm(`حذف «${product.name}»؟`)) return;
   products = products.filter((p) => p.id !== id);
-  saveDraft();
+  await persistProducts();
   render();
 }
 
@@ -289,18 +371,7 @@ function uid() {
   return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function downloadProductsJson() {
-  const blob = new Blob([JSON.stringify(products, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "products.json";
-  a.click();
-  URL.revokeObjectURL(url);
-  markPublishedLocally();
-}
-
-els.form.addEventListener("submit", (e) => {
+els.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!isAdmin) return;
   const entry = {
@@ -312,17 +383,13 @@ els.form.addEventListener("submit", (e) => {
     price30kg: parseOptionalPrice(els.price30kg.value),
     notes: els.productNotes.value.trim(),
   };
-
   if (!entry.name || Number.isNaN(entry.price1kg)) return;
 
-  if (editingId) {
-    products = products.map((p) => (p.id === editingId ? entry : p));
-  } else {
-    products.push(entry);
-  }
+  if (editingId) products = products.map((p) => (p.id === editingId ? entry : p));
+  else products.push(entry);
 
-  saveDraft();
   els.dialog.close();
+  await persistProducts();
   render();
 });
 
@@ -332,8 +399,6 @@ document.getElementById("printBtn").addEventListener("click", () => window.print
 
 const adminDialog = document.getElementById("adminDialog");
 const adminError = document.getElementById("adminError");
-const publishDialog = document.getElementById("publishDialog");
-const publishMessage = document.getElementById("publishMessage");
 const exportDialog = document.getElementById("exportDialog");
 
 els.adminBtn.addEventListener("click", () => {
@@ -341,6 +406,7 @@ els.adminBtn.addEventListener("click", () => {
     isAdmin = false;
     sessionStorage.removeItem(ADMIN_KEY);
     updateAdminUI();
+    updateStatusUI();
     render();
     return;
   }
@@ -353,8 +419,7 @@ document.getElementById("adminCancelBtn").addEventListener("click", () => adminD
 
 document.getElementById("adminForm").addEventListener("submit", (e) => {
   e.preventDefault();
-  const pin = document.getElementById("adminPinInput").value;
-  if (pin !== getAdminPin()) {
+  if (document.getElementById("adminPinInput").value !== getAdminPin()) {
     adminError.hidden = false;
     adminError.textContent = "رمز الإدارة غير صحيح.";
     return;
@@ -363,33 +428,12 @@ document.getElementById("adminForm").addEventListener("submit", (e) => {
   sessionStorage.setItem(ADMIN_KEY, "1");
   adminDialog.close();
   updateAdminUI();
+  updateStatusUI();
   render();
 });
 
-function openPublishDialog() {
-  publishMessage.hidden = true;
-  publishDialog.showModal();
-}
-
-document.getElementById("publishBtn").addEventListener("click", openPublishDialog);
-document.getElementById("publishNowBtn").addEventListener("click", openPublishDialog);
-document.getElementById("publishCloseBtn").addEventListener("click", () => publishDialog.close());
-
-document.getElementById("downloadProductsJsonBtn").addEventListener("click", () => {
-  downloadProductsJson();
-  publishMessage.hidden = false;
-  publishMessage.textContent =
-    "تم التحميل. ارفع products.json على GitHub مكان الملف القديم، واستنى Vercel يعمل تحديث.";
-});
-
-document.getElementById("exportSheetBtn").addEventListener("click", () => {
-  exportDialog.showModal();
-});
-
-document.getElementById("exportCancelBtn").addEventListener("click", () => {
-  exportDialog.close();
-});
-
+document.getElementById("exportSheetBtn").addEventListener("click", () => exportDialog.showModal());
+document.getElementById("exportCancelBtn").addEventListener("click", () => exportDialog.close());
 document.getElementById("exportDownloadBtn").addEventListener("click", () => {
   const pack = document.querySelector('input[name="exportPack"]:checked')?.value || "1kg";
   const onlyFiltered = document.getElementById("exportFiltered").checked;
@@ -456,8 +500,7 @@ function downloadPriceSheet(pack, onlyFiltered) {
   }
 
   const lines = [headers, ...rows].map((row) => row.map(csvEscape).join(","));
-  const csv = "\uFEFF" + lines.join("\r\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

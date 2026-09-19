@@ -13,10 +13,11 @@
   <div class="bg-glow" aria-hidden="true"></div>
   <div class="bg-pattern" aria-hidden="true"></div>
 
-  <div id="publishBanner" class="publish-banner hidden" role="status">
-    <p>عندك تعديلات لسه مش على الموقع العام. اضغط «نشر على الموقع» عشان الكل يشوفها.</p>
-    <button type="button" class="btn btn-primary" id="publishNowBtn">نشر على الموقع</button>
+  <div id="setupBanner" class="publish-banner hidden" role="status">
+    <p>التحديث اللحظي مش مفعّل لسه. فعّل Firebase مرة واحدة من ملف config.js عشان أي تعديل يظهر للجميع على طول.</p>
   </div>
+
+  <div id="saveToast" class="save-toast hidden" role="status">تم الحفظ — ظاهر للجميع الآن</div>
 
   <header class="site-header">
     <div class="brand-block">
@@ -25,7 +26,6 @@
     </div>
     <div class="header-actions">
       <button type="button" class="btn btn-ghost" id="adminBtn">دخول الإدارة</button>
-      <button type="button" class="btn btn-ghost admin-only hidden" id="publishBtn">نشر على الموقع</button>
       <button type="button" class="btn btn-ghost" id="exportSheetBtn">مشاركة الجدول</button>
       <button type="button" class="btn btn-ghost" id="printBtn">طباعة</button>
       <button type="button" class="btn btn-primary admin-only hidden" id="addProductBtn">إضافة منتج</button>
@@ -67,14 +67,14 @@
   </main>
 
   <footer class="site-footer">
-    <p id="syncStatus">الزوار يشوفون الأسعار المنشورة على الموقع. التعديلات تظهر للجميع بعد «نشر على الموقع».</p>
+    <p id="syncStatus">جاري تحميل الأسعار…</p>
   </footer>
 
   <!-- Admin login -->
   <dialog id="adminDialog" class="modal">
     <form method="dialog" id="adminForm" class="export-panel">
       <h2>دخول الإدارة</h2>
-      <p class="export-hint">أدخل رمز الإدارة لتعديل الأسعار ونشرها على رابط Vercel.</p>
+      <p class="export-hint">أدخل رمز الإدارة لتعديل الأسعار. بعد الحفظ تظهر للجميع مباشرة (إذا كان التحديث اللحظي مفعّل).</p>
       <label>
         رمز الإدارة
         <input type="password" id="adminPinInput" required autocomplete="current-password" />
@@ -87,58 +87,35 @@
     </form>
   </dialog>
 
-  <!-- Publish modal -->
-  <dialog id="publishDialog" class="modal">
-    <div class="export-panel">
-      <h2>نشر على الموقع</h2>
-      <p class="export-hint">
-        Vercel بيعرض ملف <strong>products.json</strong> من GitHub. عشان الكل يشوف تعديلاتك:
-      </p>
-      <ol class="publish-steps">
-        <li>اضغط تحميل <strong>products.json</strong> بالأسفل.</li>
-        <li>افتح مستودع GitHub → ارفع الملف مكان القديم (Replace).</li>
-        <li>استنى دقيقة أو اتنين لحد Vercel يعمل Redeploy.</li>
-        <li>حدّث صفحة الموقع — التعديلات هتظهر للجميع.</li>
-      </ol>
-      <div class="sync-actions">
-        <button type="button" class="btn btn-primary" id="downloadProductsJsonBtn">تحميل products.json</button>
-      </div>
-      <p class="export-hint" id="publishMessage" hidden></p>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-ghost" id="publishCloseBtn">إغلاق</button>
-      </div>
-    </div>
-  </dialog>
-
   <!-- Export sheet modal -->
   <dialog id="exportDialog" class="modal">
     <div class="export-panel">
       <h2>مشاركة قائمة الأسعار</h2>
-      <p class="export-hint">حمّل جدولاً يفتح في إكسل أو Google Sheets لإرساله للعملاء. السعر المعروض هو سعر الكيلو الواحد.</p>
+      <p class="export-hint">حمّل جدولاً يفتح في إكسل أو Google Sheets لإرساله للعملاء.</p>
 
       <fieldset class="export-options">
         <legend>أي قائمة؟</legend>
         <label class="export-choice">
           <input type="radio" name="exportPack" value="1kg" checked />
-          <span><strong>١ كجم فقط</strong> — المنتج + سعر الكيلو</span>
+          <span><strong>١ كجم فقط</strong></span>
         </label>
         <label class="export-choice">
           <input type="radio" name="exportPack" value="10kg" />
-          <span><strong>١٠ كجم فقط</strong> — المنتج + سعر الكيلو عند ١٠ كجم</span>
+          <span><strong>١٠ كجم فقط</strong></span>
         </label>
         <label class="export-choice">
           <input type="radio" name="exportPack" value="30kg" />
-          <span><strong>٣٠ كجم فقط</strong> — المنتج + سعر الكيلو عند ٣٠ كجم</span>
+          <span><strong>٣٠ كجم فقط</strong></span>
         </label>
         <label class="export-choice">
           <input type="radio" name="exportPack" value="all" />
-          <span><strong>القائمة كاملة</strong> — أسعار الكيلو لـ ١ و ١٠ و ٣٠ معاً</span>
+          <span><strong>القائمة كاملة</strong></span>
         </label>
       </fieldset>
 
       <label class="export-scope">
         <input type="checkbox" id="exportFiltered" />
-        المنتجات الظاهرة فقط (حسب البحث / التصنيف الحالي)
+        المنتجات الظاهرة فقط
       </label>
 
       <div class="modal-actions">
@@ -195,6 +172,8 @@
     </form>
   </dialog>
 
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>

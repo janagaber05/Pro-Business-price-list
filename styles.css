@@ -534,6 +534,29 @@ main,
   flex: 1;
 }
 
+.save-toast {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 0.85rem 1.2rem;
+  border-radius: 999px;
+  background: var(--accent-deep);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 12px 30px rgba(20, 36, 31, 0.25);
+  animation: rise 0.25s ease both;
+}
+
+@media print {
+  .publish-banner,
+  .save-toast,
+  #adminBtn {
+    display: none !important;
+  }
+}
+
 .publish-steps {
   margin: 0;
   padding-inline-start: 1.25rem;
