@@ -1,0 +1,8 @@
+{
+  "name": "pro-business-price-list",
+  "private": true,
+  "description": "Plain React (CDN) price list — no Vite",
+  "scripts": {
+    "start": "npx --yes serve . -p 3000"
+  }
+}
