@@ -971,7 +971,7 @@ function App() {
     await persist(next, orders, "تم تطبيق الاستيراد");
   }
 
-  function downloadSheet(pack, onlyFiltered) {
+  function downloadSheet(pack, onlyFiltered, includeStock = false) {
     const list = onlyFiltered ? filtered : [...products];
     const sorted = [...list].sort((a, b) => {
       const cat = CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category);
@@ -983,30 +983,56 @@ function App() {
     let headers;
     let rows;
     if (pack === "1kg") {
-      headers = ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "المخزون", "ملاحظات"];
-      rows = sorted.map((p) => [p.name, CATEGORY_LABELS[p.category], "١ كجم", hasPrice(p.price1kg) ? p.price1kg : "", p.quantity ?? 0, p.notes || ""]);
+      headers = includeStock
+        ? ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "المخزون", "ملاحظات"]
+        : ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "ملاحظات"];
+      rows = sorted.map((p) => {
+        const base = [p.name, CATEGORY_LABELS[p.category], "١ كجم", hasPrice(p.price1kg) ? p.price1kg : ""];
+        if (includeStock) base.push(p.quantity ?? 0);
+        base.push(p.notes || "");
+        return base;
+      });
     } else if (pack === "10kg") {
-      headers = ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "المخزون", "ملاحظات"];
-      rows = sorted.map((p) => [p.name, CATEGORY_LABELS[p.category], "١٠ كجم", hasPrice(p.price10kg) ? p.price10kg : "", p.quantity ?? 0, p.notes || ""]);
+      headers = includeStock
+        ? ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "المخزون", "ملاحظات"]
+        : ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "ملاحظات"];
+      rows = sorted.map((p) => {
+        const base = [p.name, CATEGORY_LABELS[p.category], "١٠ كجم", hasPrice(p.price10kg) ? p.price10kg : ""];
+        if (includeStock) base.push(p.quantity ?? 0);
+        base.push(p.notes || "");
+        return base;
+      });
     } else if (pack === "30kg") {
-      headers = ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "المخزون", "ملاحظات"];
-      rows = sorted.map((p) => [p.name, CATEGORY_LABELS[p.category], "٣٠ كجم", hasPrice(p.price30kg) ? p.price30kg : "", p.quantity ?? 0, p.notes || ""]);
+      headers = includeStock
+        ? ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "المخزون", "ملاحظات"]
+        : ["المنتج", "التصنيف", "الكمية", `سعر الكيلو (${currencyLabel})`, "ملاحظات"];
+      rows = sorted.map((p) => {
+        const base = [p.name, CATEGORY_LABELS[p.category], "٣٠ كجم", hasPrice(p.price30kg) ? p.price30kg : ""];
+        if (includeStock) base.push(p.quantity ?? 0);
+        base.push(p.notes || "");
+        return base;
+      });
     } else {
-      headers = ["المنتج", "التصنيف", "١ كجم", "١٠ كجم", "٣٠ كجم", "المخزون", "ملاحظات"];
-      rows = sorted.map((p) => [
-        p.name,
-        CATEGORY_LABELS[p.category],
-        hasPrice(p.price1kg) ? p.price1kg : "",
-        hasPrice(p.price10kg) ? p.price10kg : "",
-        hasPrice(p.price30kg) ? p.price30kg : "",
-        p.quantity ?? 0,
-        p.notes || "",
-      ]);
+      headers = includeStock
+        ? ["المنتج", "التصنيف", "١ كجم", "١٠ كجم", "٣٠ كجم", "المخزون", "ملاحظات"]
+        : ["المنتج", "التصنيف", "١ كجم", "١٠ كجم", "٣٠ كجم", "ملاحظات"];
+      rows = sorted.map((p) => {
+        const base = [
+          p.name,
+          CATEGORY_LABELS[p.category],
+          hasPrice(p.price1kg) ? p.price1kg : "",
+          hasPrice(p.price10kg) ? p.price10kg : "",
+          hasPrice(p.price30kg) ? p.price30kg : "",
+        ];
+        if (includeStock) base.push(p.quantity ?? 0);
+        base.push(p.notes || "");
+        return base;
+      });
     }
     const csv = "\uFEFF" + [headers, ...rows].map((r) => r.map(csvEscape).join(",")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    a.download = `Pro-Business-prices-${pack}-${date}.csv`;
+    a.download = `Pro-Business-prices-${pack}${includeStock ? "-stock" : ""}-${date}.csv`;
     a.click();
   }
 
@@ -1359,8 +1385,8 @@ function App() {
       {exportOpen && (
         <ExportDialog
           onClose={() => setExportOpen(false)}
-          onDownload={(pack, onlyFiltered) => {
-            downloadSheet(pack, onlyFiltered);
+          onDownload={(pack, onlyFiltered, includeStock) => {
+            downloadSheet(pack, onlyFiltered, includeStock);
             setExportOpen(false);
           }}
         />
@@ -1422,18 +1448,19 @@ function App() {
 function ExportDialog({ onClose, onDownload }) {
   const [pack, setPack] = useState("1kg");
   const [onlyFiltered, setOnlyFiltered] = useState(false);
+  const [includeStock, setIncludeStock] = useState(false);
   return (
     <dialog open className="modal">
       <div className="export-panel">
         <h2>مشاركة قائمة الأسعار</h2>
-        <p className="export-hint">حمّل جدولاً لإرساله للعملاء.</p>
+        <p className="export-hint">حمّل جدولاً لإرساله للعملاء (بدون مخزون بشكل افتراضي).</p>
         <fieldset className="export-options">
           <legend>أي قائمة؟</legend>
           {[
             ["1kg", "١ كجم فقط"],
             ["10kg", "١٠ كجم فقط"],
             ["30kg", "٣٠ كجم فقط"],
-            ["all", "كاملة + الكمية"],
+            ["all", "كاملة (كل الأسعار)"],
           ].map(([value, label]) => (
             <label key={value} className="export-choice">
               <input type="radio" name="exportPack" checked={pack === value} onChange={() => setPack(value)} />
@@ -1447,11 +1474,19 @@ function ExportDialog({ onClose, onDownload }) {
           <input type="checkbox" checked={onlyFiltered} onChange={(e) => setOnlyFiltered(e.target.checked)} />
           المنتجات الظاهرة فقط
         </label>
+        <label className="export-scope">
+          <input type="checkbox" checked={includeStock} onChange={(e) => setIncludeStock(e.target.checked)} />
+          تضمين المخزون (الكمية المتوفرة)
+        </label>
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             إلغاء
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => onDownload(pack, onlyFiltered)}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => onDownload(pack, onlyFiltered, includeStock)}
+          >
             تحميل الجدول
           </button>
         </div>
