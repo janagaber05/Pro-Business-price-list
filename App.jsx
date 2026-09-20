@@ -142,36 +142,211 @@ function createSupabase() {
   }
 }
 
+function cellText(v) {
+  if (v === null || v === undefined) return "";
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).replace(/\s+/g, " ").trim();
+}
+
+function isNameHeader(text) {
+  const h = cellText(text);
+  return /اسم\s*الصنف|اسم المنتج|الصنف|المنتج|product\s*name|^item$|^name$/i.test(h);
+}
+
+function qtyScore(text) {
+  const h = cellText(text);
+  if (!h) return 0;
+  // Prefer remaining/sellable/balance over sold
+  if (/متبقي|متبقيه|صالح|رصيد|مخزون|متاح|stock|remaining|balance|on\s*hand/i.test(h)) return 5;
+  if (/كمية|كميه|وزن|qty|quantity|weight|كجم|كيلو/i.test(h) && !/مباع|sold|بيع/i.test(h)) return 3;
+  if (/مباع|sold/i.test(h)) return 1;
+  return 0;
+}
+
+function isSectionTitle(text) {
+  const h = cellText(text);
+  if (!h || h.length < 4) return false;
+  if (isNameHeader(h) || qtyScore(h)) return false;
+  if (/تاريخ|وحده|وحدة|ملاحظات/i.test(h)) return false;
+  // long titles / category banners
+  return /فواكه|حلويات|خضار|خامات|تقرير|مصنع|مستورد|مجفد|مجفف|أرصده|ارصده|RSIF|FDLF|FDLS|RVIV/i.test(h) || h.length > 28;
+}
+
+function isJunkName(name) {
+  const h = cellText(name);
+  if (!h) return true;
+  if (isNameHeader(h) || qtyScore(h) > 0) return true;
+  if (isSectionTitle(h)) return true;
+  if (/^total|اجمالي|الإجمالي|المجموع|عينه|عينات|مهام|تجهيز|تنظيف|تعبئه|تعبئة|غدا|تسجيل/i.test(h)) return true;
+  if (/^\d+(\.\d+)?$/.test(h)) return true;
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(h)) return true;
+  return false;
+}
+
+function parseNumberCell(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number" && !Number.isNaN(v)) return v;
+  const n = Number(String(v).replace(/,/g, "").replace(/[^\d.-]/g, ""));
+  return Number.isNaN(n) ? null : n;
+}
+
+function namesLooselyMatch(a, b) {
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[أإآ]/g, "ا")
+      .replace(/ة/g, "ه")
+      .replace(/ى/g, "ي")
+      .replace(/ؤ/g, "و")
+      .replace(/ئ/g, "ي")
+      .replace(/[^0-9a-z\u0600-\u06FF]/g, "")
+      .trim();
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.includes(y) || y.includes(x)) return true;
+  return false;
+}
+
+function findExistingProduct(products, name) {
+  return (
+    products.find((p) => p.name === name) ||
+    products.find((p) => namesLooselyMatch(p.name, name)) ||
+    null
+  );
+}
+
+/**
+ * Understands messy Arabic inventory reports with multiple sections
+ * and side-by-side tables (like التقرير اليومي).
+ * Works for ANY similar sheet: finds "اسم الصنف" blocks + nearby qty columns.
+ */
+function extractInventoryTables(aoa, products) {
+  if (!aoa?.length) return [];
+  const width = Math.max(...aoa.map((r) => (r ? r.length : 0)), 0);
+  const blocks = [];
+
+  for (let r = 0; r < aoa.length; r++) {
+    const row = aoa[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      if (!isNameHeader(row[c])) continue;
+      // find best quantity column on same header row (to the right, nearby)
+      let bestCol = -1;
+      let best = 0;
+      for (let k = c + 1; k < Math.min(row.length, c + 8); k++) {
+        const score = qtyScore(row[k]);
+        if (score > best) {
+          best = score;
+          bestCol = k;
+        }
+      }
+      // also check if quantity header is slightly offset on previous/next row
+      if (best < 3) {
+        for (const rr of [r - 1, r + 1]) {
+          if (rr < 0 || rr >= aoa.length) continue;
+          const prow = aoa[rr] || [];
+          for (let k = c + 1; k < Math.min(prow.length, c + 8); k++) {
+            const score = qtyScore(prow[k]);
+            if (score > best) {
+              best = score;
+              bestCol = k;
+            }
+          }
+        }
+      }
+      if (bestCol < 0) continue;
+      blocks.push({ headerRow: r, nameCol: c, qtyCol: bestCol, score: best });
+    }
+  }
+
+  // de-duplicate overlapping blocks (same nameCol near same row)
+  blocks.sort((a, b) => a.headerRow - b.headerRow || a.nameCol - b.nameCol);
+  const used = new Set();
+  const merged = new Map(); // name -> qty (prefer higher remaining values from sellable table)
+
+  for (const block of blocks) {
+    const key = `${block.nameCol}`;
+    // read downward
+    let emptyStreak = 0;
+    for (let r = block.headerRow + 1; r < aoa.length; r++) {
+      // stop if another name-header appears in this column
+      const row = aoa[r] || [];
+      const rawName = cellText(row[block.nameCol]);
+      if (isNameHeader(rawName)) break;
+      if (!rawName) {
+        emptyStreak += 1;
+        if (emptyStreak >= 3) break;
+        continue;
+      }
+      emptyStreak = 0;
+      if (isJunkName(rawName)) {
+        // section banner — continue scanning this block (next products may follow)
+        if (isSectionTitle(rawName)) continue;
+        continue;
+      }
+
+      const qty = parseNumberCell(row[block.qtyCol]);
+      if (qty === null) continue;
+
+      const nkey = rawName;
+      const prev = merged.get(nkey);
+      // if same product appears twice, keep the entry from higher-priority qty column (score) or first sellable
+      if (!prev || block.score >= prev.score) {
+        merged.set(nkey, { name: rawName, quantity: qty, score: block.score });
+      }
+      used.add(`${r}:${block.nameCol}`);
+    }
+  }
+
+  const rows = [];
+  for (const item of merged.values()) {
+    const existing = findExistingProduct(products, item.name);
+    const row = normalizeProduct({
+      name: item.name,
+      category: existing?.category || guessCategory(item.name),
+      price1kg: null,
+      price10kg: null,
+      price30kg: null,
+      quantity: item.quantity,
+      notes: "",
+    });
+    row._status = existing ? "تحديث كمية" : "جديد";
+    row._existingId = existing?.id;
+    row._via = "inventory-parser";
+    rows.push(row);
+  }
+  return rows;
+}
+
 function mapHeader(header) {
-  const h = String(header || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (/^(name|product|المنتج|اسم|الصنف|بيان|item)$/.test(h) || h.includes("منتج") || h.includes("اسم") || h.includes("صنف") || h.includes("بيان")) return "name";
+  const h = cellText(header).toLowerCase();
+  if (isNameHeader(h)) return "name";
   if (/category|تصنيف|قسم|نوع/.test(h)) return "category";
-  // prices before quantity, so "كجم" alone doesn't steal price columns
-  if (/30|٣٠/.test(h) && /سعر|price|جنيه|جم|ج\.م|egp|للكيلو|كيلو/.test(h)) return "price30kg";
-  if (/10|١٠/.test(h) && /سعر|price|جنيه|جم|ج\.م|egp|للكيلو|كيلو/.test(h)) return "price10kg";
-  if (/30|٣٠/.test(h) && !/وزن|كمية|qty|stock|مخزون|متاح|رصيد/.test(h)) return "price30kg";
-  if (/10|١٠/.test(h) && !/وزن|كمية|qty|stock|مخزون|متاح|رصيد/.test(h)) return "price10kg";
-  if ((/1|١/.test(h) || /price|سعر/.test(h)) && /kg|كجم|كيلو|سعر|جنيه|egp/.test(h) && !/10|30|١٠|٣٠|وزن|كمية|مخزون/.test(h)) return "price1kg";
-  if (/^price$|^سعر$/.test(h) || h === "سعر الكيلو" || h === "السعر") return "price1kg";
-  // weight / stock / quantity (Arabic + English)
-  if (/qty|quantity|كمية|الكميه|الكميات|المخزون|متاح|stock|weight|وزن|الاوزان|الأوزان|رصيد|بالكجم|بالكيلو|عدد الكيلو/.test(h)) return "quantity";
+  if (/30|٣٠/.test(h) && /سعر|price|جنيه|egp|للكيلو/.test(h)) return "price30kg";
+  if (/10|١٠/.test(h) && /سعر|price|جنيه|egp|للكيلو/.test(h)) return "price10kg";
+  if ((/1|١/.test(h) || /price|سعر/.test(h)) && /سعر|price|جنيه|egp|للكيلو|كجم/.test(h) && !/10|30|١٠|٣٠|متبقي|رصيد|مباع/.test(h)) return "price1kg";
+  if (qtyScore(h) >= 3) return "quantity";
   if (/note|ملاحظ/.test(h)) return "notes";
   return null;
 }
 
 function parseSheetRows(aoa, products) {
+  // Prefer multi-table inventory extraction for reports like التقرير اليومي
+  const inventory = extractInventoryTables(aoa, products);
+  if (inventory.length >= 3) return inventory;
+
   if (!aoa?.length) return [];
-  // Find the most likely header row (not always row 0)
   let headerIndex = 0;
   let bestScore = -1;
-  const scan = Math.min(aoa.length, 15);
+  const scan = Math.min(aoa.length, 25);
   for (let i = 0; i < scan; i++) {
     const row = aoa[i] || [];
     let score = 0;
     row.forEach((cell) => {
       if (mapHeader(cell)) score += 2;
-      const t = String(cell || "");
-      if (/منتج|اسم|صنف|بيان|سعر|كمية|كميه|وزن|مخزون|كجم|price|qty|product|weight|stock/i.test(t)) score += 1;
+      const t = cellText(cell);
+      if (/منتج|اسم|صنف|بيان|سعر|كمية|كميه|وزن|مخزون|رصيد|متبقي|كجم|price|qty|product|weight|stock/i.test(t)) score += 1;
     });
     if (score > bestScore) {
       bestScore = score;
@@ -185,16 +360,30 @@ function parseSheetRows(aoa, products) {
     const key = mapHeader(h);
     if (key && col[key] === undefined) col[key] = i;
   });
+  if (col.name === undefined) {
+    // try find name col in header row
+    headers.forEach((h, i) => {
+      if (col.name === undefined && isNameHeader(h)) col.name = i;
+    });
+  }
   if (col.name === undefined && headers.length) col.name = 0;
+  if (col.quantity === undefined) {
+    let best = 0;
+    headers.forEach((h, i) => {
+      const s = qtyScore(h);
+      if (s > best) {
+        best = s;
+        col.quantity = i;
+      }
+    });
+  }
 
   const rows = [];
   for (let r = headerIndex + 1; r < aoa.length; r++) {
     const line = aoa[r];
     if (!line || !line.length) continue;
-    const name = String(line[col.name] ?? "").trim();
-    if (!name) continue;
-    if (/^total|الإجمالي|اجمالي|المجموع/i.test(name)) continue;
-    if (/^\d+(\.\d+)?$/.test(name)) continue; // skip pure numbers mistaken as names
+    const name = cellText(line[col.name]);
+    if (!name || isJunkName(name)) continue;
     const categoryRaw = col.category !== undefined ? line[col.category] : "";
     const qtyRaw = col.quantity !== undefined ? line[col.quantity] : null;
     const row = normalizeProduct({
@@ -206,26 +395,64 @@ function parseSheetRows(aoa, products) {
       quantity: qtyRaw === null || qtyRaw === "" ? null : qtyRaw,
       notes: col.notes !== undefined ? String(line[col.notes] ?? "") : "",
     });
-    // keep null prices as null (don't force 0) — applyImport will preserve old prices
     if (row.quantity === null || Number.isNaN(row.quantity)) row.quantity = 0;
-    const existing = products.find((p) => p.name === row.name || namesLooselyMatch(p.name, row.name));
+    const existing = findExistingProduct(products, row.name);
     row._status = existing ? "تحديث كمية/بيانات" : "جديد";
     row._existingId = existing?.id;
     rows.push(row);
   }
-  return rows;
+  return rows.length ? rows : inventory;
 }
 
-function namesLooselyMatch(a, b) {
-  const norm = (s) =>
-    String(s || "")
-      .toLowerCase()
-      .replace(/[أإآ]/g, "ا")
-      .replace(/ة/g, "ه")
-      .replace(/ى/g, "ي")
-      .replace(/\s+/g, "")
-      .trim();
-  return norm(a) && norm(a) === norm(b);
+function sheetToAiText(aoa) {
+  // Compact labeled grid so Gemini understands ANY layout
+  return aoa
+    .slice(0, 120)
+    .map((row, i) => {
+      const cells = (row || [])
+        .map((v, c) => {
+          const t = cellText(v);
+          return t ? `C${c + 1}:${t}` : null;
+        })
+        .filter(Boolean);
+      return cells.length ? `R${i + 1} ${cells.join(" | ")}` : null;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildGeminiPrompt(aoa) {
+  return `You are an expert at reading ANY messy Arabic/English Excel inventory or price sheet for an Egyptian freeze-dried food business (Pro Business).
+
+The sheet may contain:
+- titles and dates
+- multiple sections (imported fruits, local fruits, candy, vegetables, raw materials)
+- TWO tables side-by-side
+- columns like: اسم الصنف, الوحده, الكميه المباعه, الكميه المتبقيه الصالحه للبيع, الرصيد
+- NO prices at all (quantity-only daily reports) — that is normal
+
+Return ONLY a valid JSON array. Each item:
+{
+  "name": string,
+  "category": "fruits" | "candy" | "vegetables",
+  "price1kg": number | null,
+  "price10kg": number | null,
+  "price30kg": number | null,
+  "quantity": number,
+  "notes": string
+}
+
+Critical rules:
+1) Extract EVERY product row you can find from ALL sections and BOTH left/right tables.
+2) For stock/quantity prefer: "الكميه المتبقيه الصالحه للبيع" or "الرصيد" (NOT "الكميه المباعه").
+3) If there is no price column, set all prices to null (do not invent zeros as prices).
+4) quantity must be the remaining/balance number in kg when present (0 is valid).
+5) Skip totals, tasks/notes paragraphs, empty rows, and section titles.
+6) Keep Arabic names exactly as written.
+7) Guess category from the product name / section title.
+
+Sheet cells:
+${sheetToAiText(aoa)}`;
 }
 
 function extractJsonArray(text) {
@@ -240,40 +467,13 @@ function extractJsonArray(text) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-async function callGeminiDirect(apiKey, sheet) {
-  const trimmed = sheet.slice(0, 100);
-  const prompt = `You extract product rows from messy Arabic/English spreadsheets for a freeze-dried food wholesaler in Egypt (Pro Business).
-
-Return ONLY a valid JSON array (no markdown). Each item:
-{
-  "name": string,
-  "category": "fruits" | "candy" | "vegetables",
-  "price1kg": number | null,
-  "price10kg": number | null,
-  "price30kg": number | null,
-  "quantity": number,
-  "notes": string
-}
-
-Rules:
-- Skip titles, totals, empty rows, and non-product lines.
-- Many sheets have PRODUCT + WEIGHT/QUANTITY only (no prices). That is OK.
-- Put weight/stock values into "quantity" (number in kg). Look for columns like: كمية، وزن، مخزون، رصيد، كجم، weight, qty, stock.
-- Prices are PER KILOGRAM in EGP when present. If there is NO price column, set price1kg/price10kg/price30kg to null (do NOT invent 0 unless the cell is really 0).
-- If only one price exists, put it in price1kg.
-- Guess category from the product name when missing.
-- Keep Arabic product names as written.
-- Never drop a row just because price is missing if name + quantity/weight exist.
-
-Spreadsheet rows (JSON array of arrays):
-${JSON.stringify(trimmed)}`;
-
+async function callGeminiDirect(apiKey, aoa) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ role: "user", parts: [{ text: buildGeminiPrompt(aoa) }] }],
       generationConfig: {
         temperature: 0,
         responseMimeType: "application/json",
@@ -292,14 +492,12 @@ ${JSON.stringify(trimmed)}`;
 }
 
 async function parseWithRealAI(aoa) {
-  const sheet = aoa.slice(0, 100);
-
   // 1) Vercel serverless (production)
   try {
     const res = await fetch("/api/parse-excel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sheet }),
+      body: JSON.stringify({ sheet: aoa.slice(0, 120), text: sheetToAiText(aoa) }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -314,7 +512,7 @@ async function parseWithRealAI(aoa) {
   // 2) Direct Gemini from browser (local npm start)
   const key = window.APP_CONFIG?.geminiApiKey;
   if (key && String(key).trim()) {
-    const products = await callGeminiDirect(String(key).trim(), sheet);
+    const products = await callGeminiDirect(String(key).trim(), aoa);
     if (Array.isArray(products) && products.length) {
       return { products, source: "ai" };
     }
@@ -327,13 +525,12 @@ function rowsFromAIProducts(aiProducts, products) {
   return aiProducts
     .map((p) => {
       const row = normalizeProduct(p);
-      if (!row.name) return null;
-      // do not force missing prices to 0
+      if (!row.name || isJunkName(row.name)) return null;
       if (!hasPrice(row.price1kg)) row.price1kg = null;
       if (!hasPrice(row.price10kg)) row.price10kg = null;
       if (!hasPrice(row.price30kg)) row.price30kg = null;
       if (row.quantity === null || Number.isNaN(Number(row.quantity))) row.quantity = 0;
-      const existing = products.find((x) => x.name === row.name || namesLooselyMatch(x.name, row.name));
+      const existing = findExistingProduct(products, row.name);
       row._status = existing ? "تحديث كمية/بيانات" : "جديد";
       row._existingId = existing?.id;
       row._via = "AI";
@@ -594,14 +791,17 @@ function App() {
     const file = e.target.files?.[0];
     if (!file || !window.XLSX) return;
     try {
-      showToast("جاري تحليل الملف بالذكاء الاصطناعي…");
+      showToast("جاري فهم الملف (أي شكل Excel)…");
       const data = await file.arrayBuffer();
       const wb = XLSX.read(data, { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
-      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
 
       let rows = [];
       let source = "rules";
+
+      // Always run structural inventory parser (works for التقرير اليومي and similar)
+      const inventoryRows = extractInventoryTables(aoa, products);
 
       try {
         const ai = await parseWithRealAI(aoa);
@@ -613,24 +813,26 @@ function App() {
         console.error(aiErr);
       }
 
-      if (!rows.length) {
+      // Prefer whichever extracted more real stock rows; inventory parser is strong for Arabic reports
+      if (inventoryRows.length && inventoryRows.length >= (rows.length || 0)) {
+        rows = inventoryRows;
+        source = "inventory";
+      } else if (!rows.length) {
         rows = parseSheetRows(aoa, products);
         source = "rules";
       }
 
       if (!rows.length) {
         alert(
-          "لم يتم التعرف على صفوف صالحة.\n\nللذكاء الحقيقي (مجاني): أضف مفتاح Gemini في config.js (geminiApiKey) من https://aistudio.google.com/apikey\nأو استخدم جدول فيه عمود اسم المنتج."
+          "لم يتم التعرف على صفوف صالحة.\n\nالملف لازم فيه أسماء أصناف + كمية/رصيد.\nلو عندك Gemini key في config.js هيساعد يفهم أي شكل تقريباً."
         );
         return;
       }
 
       setImportRows(rows);
-      showToast(
-        source === "ai"
-          ? `AI استخرج ${rows.length} منتج`
-          : `تم تحليل ${rows.length} صف (بدون AI key — قواعد ذكية)`
-      );
+      const label =
+        source === "ai" ? "AI" : source === "inventory" ? "محلل المخزون" : "قواعد ذكية";
+      showToast(`${label}: ${rows.length} صنف (الكمية من المتبقي/الرصيد — الأسعار مش في التقرير ده)`);
     } catch (err) {
       console.error(err);
       alert("تعذر قراءة الملف.");
