@@ -15,7 +15,7 @@ window.APP_CONFIG = {
 
   enabled: true,
 
-  supabaseUrl: "https://xnfwwhnwubnurewyvemm.supabase.co",
+  supabaseUrl: "https://xnfwehnwubnurewyvemm.supabase.co",
   supabaseAnonKey:
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhuZndlaG53dWJudXJld3l2ZW1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4Mzk5MTMsImV4cCI6MjEwNTQxNTkxM30._co-yKB88F1NqCYzZiYirwvWdN7Og8_G0syHM01ByV8",
 

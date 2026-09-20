@@ -56,6 +56,97 @@ function isCloudConfigured() {
   );
 }
 
+/** Direct Supabase REST (more reliable than CDN supabase-js in plain HTML apps) */
+async function sbFetch(path, { method = "GET", body, prefer } = {}) {
+  if (!isCloudConfigured()) throw new Error("Supabase غير مفعّل في config.js");
+  if (location.protocol === "file:") {
+    throw new Error(
+      "افتح عبر http://localhost (npm start) — فتح الملف مباشرة (file://) يمنع الاتصال بـ Supabase."
+    );
+  }
+  const base = String(window.APP_CONFIG.supabaseUrl).replace(/\/$/, "");
+  const key = window.APP_CONFIG.supabaseAnonKey;
+  const headers = {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    Accept: "application/json",
+  };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (prefer) headers.Prefer = prefer;
+
+  let res;
+  try {
+    res = await fetch(`${base}/rest/v1/${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    const tip =
+      "تعذر الوصول لـ Supabase من المتصفح (Load failed). تأكد إن المشروع Active، والجداول اتعملت من supabase-schema.sql، وأن مفيش مانع إعلانات بيبلوك supabase.co";
+    throw new Error(`${tip} — ${err?.message || err}`);
+  }
+
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 404 || /relation|does not exist|schema cache/i.test(text)) {
+      throw new Error(
+        "جداول Supabase مش موجودة. افتح SQL Editor والصق ملف supabase-schema.sql واضغط Run."
+      );
+    }
+    throw new Error(`Supabase ${res.status}: ${text.slice(0, 180)}`);
+  }
+  if (res.status === 204) return null;
+  const text = await res.text();
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
+async function cloudLoadProducts() {
+  const data = await sbFetch("products?select=*&order=name.asc");
+  return (data || []).map(normalizeProduct);
+}
+
+async function cloudLoadOrders() {
+  try {
+    const data = await sbFetch("orders?select=*&order=created_at.desc&limit=100");
+    return data || [];
+  } catch {
+    return [];
+  }
+}
+
+async function cloudUpsertProducts(list) {
+  const rows = list.map((p) => ({
+    id: p.id,
+    name: p.name,
+    category: p.category,
+    price1kg: p.price1kg,
+    price10kg: p.price10kg,
+    price30kg: p.price30kg,
+    quantity: p.quantity ?? 0,
+    notes: p.notes || "",
+    updated_at: new Date().toISOString(),
+  }));
+  await sbFetch("products?on_conflict=id", {
+    method: "POST",
+    body: rows,
+    prefer: "resolution=merge-duplicates,return=minimal",
+  });
+}
+
+async function cloudDeleteProduct(id) {
+  await sbFetch(`products?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+async function cloudInsertOrder(order) {
+  await sbFetch("orders", {
+    method: "POST",
+    body: order,
+    prefer: "return=minimal",
+  });
+}
+
 function toNumOrNull(v) {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(String(v).replace(/,/g, "").trim());
@@ -128,15 +219,6 @@ async function loadSharedProducts() {
     const parsed = await res.json();
     if (!Array.isArray(parsed) || !parsed.length) return null;
     return parsed.map((p) => normalizeProduct({ ...p, quantity: p.quantity ?? 0 }));
-  } catch {
-    return null;
-  }
-}
-
-function createSupabase() {
-  if (!isCloudConfigured() || !window.supabase) return null;
-  try {
-    return window.supabase.createClient(window.APP_CONFIG.supabaseUrl, window.APP_CONFIG.supabaseAnonKey);
   } catch {
     return null;
   }
@@ -564,7 +646,6 @@ function App() {
   const [productOpen, setProductOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [importRows, setImportRows] = useState([]);
-  const [supabaseClient, setSupabaseClient] = useState(null);
 
   const [orderType, setOrderType] = useState("out");
   const [orderProductId, setOrderProductId] = useState("");
@@ -592,60 +673,41 @@ function App() {
       saveLocal(nextProducts, nextOrders);
       setProducts(nextProducts);
       setOrders(nextOrders);
-      if (supabaseClient) {
-        try {
-          const rows = nextProducts.map((p) => ({
-            id: p.id,
-            name: p.name,
-            category: p.category,
-            price1kg: p.price1kg,
-            price10kg: p.price10kg,
-            price30kg: p.price30kg,
-            quantity: p.quantity ?? 0,
-            notes: p.notes || "",
-            updated_at: new Date().toISOString(),
-          }));
-          const { error } = await supabaseClient.from("products").upsert(rows);
-          if (error) throw error;
-          setCloudError("");
-          showToast(message + " — متزامن لكل الأجهزة");
-          return true;
-        } catch (err) {
-          console.error(err);
-          const msg = err?.message || String(err);
-          setCloudError(msg);
-          showToast("⚠️ اتحفظ على الجهاز فقط — السحابة فشلت");
-          alert(
-            "التعديل اتحفظ على هذا الجهاز بس ومش على السحابة.\nعشان كده الجهاز التاني مش هيشوفه.\n\nالسبب المحتمل: جدول Supabase مش متعمل (شغّل supabase-schema.sql).\n\nتفاصيل: " +
-              msg
-          );
-          return false;
-        }
+      if (!isCloudConfigured()) {
+        showToast(message + " (محلي فقط)");
+        return false;
       }
-      showToast(message + " (محلي فقط — فعّل/راجع Supabase)");
-      return false;
+      try {
+        await cloudUpsertProducts(nextProducts);
+        setCloudReady(true);
+        setCloudError("");
+        showToast(message + " — متزامن لكل الأجهزة");
+        return true;
+      } catch (err) {
+        console.error(err);
+        const msg = err?.message || String(err);
+        setCloudReady(false);
+        setCloudError(msg);
+        showToast("⚠️ اتحفظ على الجهاز فقط — السحابة فشلت");
+        alert("التعديل اتحفظ على هذا الجهاز بس.\n\n" + msg);
+        return false;
+      }
     },
-    [supabaseClient, showToast]
+    [showToast]
   );
 
   const reloadFromCloud = useCallback(async () => {
-    const client = supabaseClient || createSupabase();
-    if (!client) {
-      showToast("Supabase مش متصل");
+    if (!isCloudConfigured()) {
+      showToast("Supabase مش مفعّل في config.js");
       return;
     }
     try {
       showToast("جاري التحديث من السحابة…");
-      const [{ data: prods, error: e1 }, { data: ords, error: e2 }] = await Promise.all([
-        client.from("products").select("*").order("name"),
-        client.from("orders").select("*").order("created_at", { ascending: false }).limit(100),
-      ]);
-      if (e1) throw e1;
-      if (e2) throw e2;
-      const list = (prods || []).map(normalizeProduct);
+      const list = await cloudLoadProducts();
+      const ords = await cloudLoadOrders();
       setProducts(list);
-      setOrders(ords || []);
-      saveLocal(list, ords || []);
+      setOrders(ords);
+      saveLocal(list, ords);
       setCloudReady(true);
       setCloudError("");
       showToast(`تم التحديث من السحابة (${list.length} منتج)`);
@@ -655,74 +717,24 @@ function App() {
       setCloudError(err?.message || String(err));
       showToast("فشل التحديث من السحابة");
     }
-  }, [supabaseClient, showToast]);
+  }, [showToast]);
 
   useEffect(() => {
     async function init() {
-      const client = createSupabase();
-      setSupabaseClient(client);
-
-      if (client) {
+      if (isCloudConfigured()) {
         try {
-          const [{ data: prods, error: e1 }, { data: ords, error: e2 }] = await Promise.all([
-            client.from("products").select("*").order("name"),
-            client.from("orders").select("*").order("created_at", { ascending: false }).limit(100),
-          ]);
-          if (e1) throw e1;
-          if (e2) throw e2;
-          let list = (prods || []).map(normalizeProduct);
+          let list = await cloudLoadProducts();
           if (!list.length) {
-            // Seed cloud once from defaults / products.json
             const seed = (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS);
-            const { error: seedErr } = await client.from("products").upsert(
-              seed.map((p) => ({
-                ...p,
-                updated_at: new Date().toISOString(),
-              }))
-            );
-            if (seedErr) throw seedErr;
+            await cloudUpsertProducts(seed);
             list = seed.map(normalizeProduct);
           }
+          const ords = await cloudLoadOrders();
           setProducts(list);
-          setOrders(ords || []);
-          saveLocal(list, ords || []);
+          setOrders(ords);
+          saveLocal(list, ords);
           setCloudReady(true);
           setCloudError("");
-
-          // Live updates when another device changes data
-          const channel = client
-            .channel("products-orders-sync")
-            .on(
-              "postgres_changes",
-              { event: "*", schema: "public", table: "products" },
-              async () => {
-                const { data } = await client.from("products").select("*").order("name");
-                if (data) {
-                  const list2 = data.map(normalizeProduct);
-                  setProducts(list2);
-                  saveLocal(list2, loadLocal()?.orders || []);
-                }
-              }
-            )
-            .on(
-              "postgres_changes",
-              { event: "*", schema: "public", table: "orders" },
-              async () => {
-                const { data } = await client
-                  .from("orders")
-                  .select("*")
-                  .order("created_at", { ascending: false })
-                  .limit(100);
-                if (data) setOrders(data);
-              }
-            )
-            .subscribe();
-
-          return () => {
-            try {
-              client.removeChannel(channel);
-            } catch {}
-          };
         } catch (err) {
           console.error(err);
           setCloudReady(false);
@@ -739,13 +751,7 @@ function App() {
       }
       setLoading(false);
     }
-    const cleanupPromise = init();
-    return () => {
-      // init may return a cleanup from inside async; best-effort
-      Promise.resolve(cleanupPromise).then((fn) => {
-        if (typeof fn === "function") fn();
-      });
-    };
+    init();
   }, []);
 
   useEffect(() => {
@@ -819,7 +825,11 @@ function App() {
     const product = products.find((p) => p.id === id);
     if (!product || !confirm(`حذف «${product.name}»؟`)) return;
     const next = products.filter((p) => p.id !== id);
-    if (supabaseClient) await supabaseClient.from("products").delete().eq("id", id);
+    try {
+      if (isCloudConfigured()) await cloudDeleteProduct(id);
+    } catch (err) {
+      console.error(err);
+    }
     await persist(next, orders, "تم حذف المنتج");
   }
 
@@ -852,17 +862,18 @@ function App() {
     saveLocal(nextProducts, nextOrders);
     setProducts(nextProducts);
     setOrders(nextOrders);
-    if (supabaseClient) {
+    if (isCloudConfigured()) {
       try {
-        await supabaseClient.from("products").upsert({
-          ...updatedProduct,
-          updated_at: new Date().toISOString(),
-        });
-        await supabaseClient.from("orders").insert(order);
+        await cloudUpsertProducts([updatedProduct]);
+        await cloudInsertOrder(order);
+        setCloudReady(true);
+        setCloudError("");
         showToast("تم تسجيل الحركة ومزامنتها");
       } catch (err) {
         console.error(err);
-        showToast("الحركة اتحفظت محلياً");
+        setCloudReady(false);
+        setCloudError(err?.message || String(err));
+        showToast("الحركة اتحفظت محلياً — السحابة فشلت");
       }
     } else {
       showToast("تم تسجيل الحركة (محلي)");
