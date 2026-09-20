@@ -157,7 +157,25 @@ function mapHeader(header) {
 
 function parseSheetRows(aoa, products) {
   if (!aoa?.length) return [];
-  const headers = aoa[0];
+  // Find the most likely header row (not always row 0)
+  let headerIndex = 0;
+  let bestScore = -1;
+  const scan = Math.min(aoa.length, 15);
+  for (let i = 0; i < scan; i++) {
+    const row = aoa[i] || [];
+    let score = 0;
+    row.forEach((cell) => {
+      if (mapHeader(cell)) score += 2;
+      const t = String(cell || "");
+      if (/منتج|اسم|سعر|كمية|كجم|price|qty|product/i.test(t)) score += 1;
+    });
+    if (score > bestScore) {
+      bestScore = score;
+      headerIndex = i;
+    }
+  }
+
+  const headers = aoa[headerIndex] || [];
   const col = {};
   headers.forEach((h, i) => {
     const key = mapHeader(h);
@@ -166,11 +184,12 @@ function parseSheetRows(aoa, products) {
   if (col.name === undefined && headers.length) col.name = 0;
 
   const rows = [];
-  for (let r = 1; r < aoa.length; r++) {
+  for (let r = headerIndex + 1; r < aoa.length; r++) {
     const line = aoa[r];
     if (!line || !line.length) continue;
     const name = String(line[col.name] ?? "").trim();
     if (!name) continue;
+    if (/^total|الإجمالي|اجمالي|المجموع/i.test(name)) continue;
     const categoryRaw = col.category !== undefined ? line[col.category] : "";
     const row = normalizeProduct({
       name,
@@ -188,6 +207,120 @@ function parseSheetRows(aoa, products) {
     rows.push(row);
   }
   return rows;
+}
+
+function extractJsonArray(text) {
+  const cleaned = String(text || "")
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  if (start === -1 || end === -1) throw new Error("No JSON array in AI response");
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+async function callOpenAIDirect(apiKey, sheet) {
+  const trimmed = sheet.slice(0, 100);
+  const prompt = `You extract product rows from messy Arabic/English spreadsheets for a freeze-dried food wholesaler in Egypt (Pro Business).
+
+Return ONLY a valid JSON array (no markdown). Each item:
+{
+  "name": string,
+  "category": "fruits" | "candy" | "vegetables",
+  "price1kg": number | null,
+  "price10kg": number | null,
+  "price30kg": number | null,
+  "quantity": number,
+  "notes": string
+}
+
+Rules:
+- Skip titles, totals, empty rows, and non-product lines.
+- Prices are PER KILOGRAM in EGP (not pack totals).
+- If only one price exists, put it in price1kg.
+- quantity is current stock in kg; use 0 if unknown.
+- Guess category from the product name when missing.
+- Keep Arabic product names as written.
+
+Spreadsheet rows (JSON array of arrays):
+${JSON.stringify(trimmed)}`;
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content: "You are a precise data-extraction engine. Output JSON arrays only.",
+        },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`OpenAI error ${response.status}: ${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "[]";
+  return extractJsonArray(content);
+}
+
+async function parseWithRealAI(aoa) {
+  const sheet = aoa.slice(0, 100);
+
+  // 1) Vercel serverless (production)
+  try {
+    const res = await fetch("/api/parse-excel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sheet }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.products) && data.products.length) {
+        return { products: data.products, source: "ai" };
+      }
+    }
+  } catch {
+    // local static server has no /api — fall through
+  }
+
+  // 2) Direct OpenAI from browser (local npm start)
+  const key = window.APP_CONFIG?.openAiApiKey;
+  if (key && String(key).startsWith("sk-")) {
+    const products = await callOpenAIDirect(key, sheet);
+    if (Array.isArray(products) && products.length) {
+      return { products, source: "ai" };
+    }
+  }
+
+  return null;
+}
+
+function rowsFromAIProducts(aiProducts, products) {
+  return aiProducts
+    .map((p) => {
+      const row = normalizeProduct(p);
+      if (!row.name) return null;
+      if (!hasPrice(row.price1kg)) row.price1kg = 0;
+      const existing = products.find((x) => x.name === row.name);
+      row._status = existing ? "تحديث" : "جديد";
+      row._existingId = existing?.id;
+      row._via = "AI";
+      return row;
+    })
+    .filter(Boolean);
 }
 
 function csvEscape(value) {
@@ -442,17 +575,43 @@ function App() {
     const file = e.target.files?.[0];
     if (!file || !window.XLSX) return;
     try {
+      showToast("جاري تحليل الملف بالذكاء الاصطناعي…");
       const data = await file.arrayBuffer();
       const wb = XLSX.read(data, { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      const rows = parseSheetRows(aoa, products);
+
+      let rows = [];
+      let source = "rules";
+
+      try {
+        const ai = await parseWithRealAI(aoa);
+        if (ai?.products?.length) {
+          rows = rowsFromAIProducts(ai.products, products);
+          source = "ai";
+        }
+      } catch (aiErr) {
+        console.error(aiErr);
+      }
+
       if (!rows.length) {
-        alert("لم يتم التعرف على صفوف صالحة.");
+        rows = parseSheetRows(aoa, products);
+        source = "rules";
+      }
+
+      if (!rows.length) {
+        alert(
+          "لم يتم التعرف على صفوف صالحة.\n\nللذكاء الحقيقي: أضف مفتاح OpenAI في config.js (openAiApiKey) أو في Vercel كـ OPENAI_API_KEY.\nأو استخدم جدول فيه عمود اسم المنتج."
+        );
         return;
       }
+
       setImportRows(rows);
-      showToast(`تم تحليل ${rows.length} صف`);
+      showToast(
+        source === "ai"
+          ? `AI استخرج ${rows.length} منتج`
+          : `تم تحليل ${rows.length} صف (بدون AI key — قواعد ذكية)`
+      );
     } catch (err) {
       console.error(err);
       alert("تعذر قراءة الملف.");
@@ -765,9 +924,10 @@ function App() {
         {view === "import" && (
           <section className="view">
             <div className="panel">
-              <h2>استيراد ذكي من Excel</h2>
+              <h2>استيراد ذكي من Excel (AI)</h2>
               <p className="panel-hint">
-                ارفع ملف Excel أو CSV فيه الأسعار والكميات. النظام هيكتشف الأعمدة تلقائياً ويعرض معاينة قبل الحفظ.
+                ارفع Excel أو CSV. النظام يستخدم <strong>OpenAI</strong> لفهم الجدول حتى لو العناوين غير مرتبة،
+                ويعرض معاينة قبل الحفظ. لو مفيش مفتاح AI، يستخدم القواعد الذكية كاحتياطي.
               </p>
               {isAdmin ? (
                 <div className="import-box">
