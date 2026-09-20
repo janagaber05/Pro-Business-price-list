@@ -555,6 +555,7 @@ function App() {
   const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_KEY) || "EGP");
   const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem(ADMIN_KEY) === "1");
   const [cloudReady, setCloudReady] = useState(false);
+  const [cloudError, setCloudError] = useState("");
   const [toast, setToast] = useState("");
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminPin, setAdminPin] = useState("");
@@ -606,24 +607,60 @@ function App() {
           }));
           const { error } = await supabaseClient.from("products").upsert(rows);
           if (error) throw error;
-          showToast(message + " — متزامن للجميع");
-          return;
+          setCloudError("");
+          showToast(message + " — متزامن لكل الأجهزة");
+          return true;
         } catch (err) {
           console.error(err);
-          showToast("تم الحفظ محلياً فقط");
-          return;
+          const msg = err?.message || String(err);
+          setCloudError(msg);
+          showToast("⚠️ اتحفظ على الجهاز فقط — السحابة فشلت");
+          alert(
+            "التعديل اتحفظ على هذا الجهاز بس ومش على السحابة.\nعشان كده الجهاز التاني مش هيشوفه.\n\nالسبب المحتمل: جدول Supabase مش متعمل (شغّل supabase-schema.sql).\n\nتفاصيل: " +
+              msg
+          );
+          return false;
         }
       }
-      showToast(message + (isCloudConfigured() ? "" : " (محلي)"));
+      showToast(message + " (محلي فقط — فعّل/راجع Supabase)");
+      return false;
     },
     [supabaseClient, showToast]
   );
+
+  const reloadFromCloud = useCallback(async () => {
+    const client = supabaseClient || createSupabase();
+    if (!client) {
+      showToast("Supabase مش متصل");
+      return;
+    }
+    try {
+      showToast("جاري التحديث من السحابة…");
+      const [{ data: prods, error: e1 }, { data: ords, error: e2 }] = await Promise.all([
+        client.from("products").select("*").order("name"),
+        client.from("orders").select("*").order("created_at", { ascending: false }).limit(100),
+      ]);
+      if (e1) throw e1;
+      if (e2) throw e2;
+      const list = (prods || []).map(normalizeProduct);
+      setProducts(list);
+      setOrders(ords || []);
+      saveLocal(list, ords || []);
+      setCloudReady(true);
+      setCloudError("");
+      showToast(`تم التحديث من السحابة (${list.length} منتج)`);
+    } catch (err) {
+      console.error(err);
+      setCloudReady(false);
+      setCloudError(err?.message || String(err));
+      showToast("فشل التحديث من السحابة");
+    }
+  }, [supabaseClient, showToast]);
 
   useEffect(() => {
     async function init() {
       const client = createSupabase();
       setSupabaseClient(client);
-      setCloudReady(Boolean(client));
 
       if (client) {
         try {
@@ -635,32 +672,80 @@ function App() {
           if (e2) throw e2;
           let list = (prods || []).map(normalizeProduct);
           if (!list.length) {
+            // Seed cloud once from defaults / products.json
             const seed = (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS);
-            await client.from("products").upsert(
+            const { error: seedErr } = await client.from("products").upsert(
               seed.map((p) => ({
                 ...p,
                 updated_at: new Date().toISOString(),
               }))
             );
-            list = seed;
+            if (seedErr) throw seedErr;
+            list = seed.map(normalizeProduct);
           }
           setProducts(list);
           setOrders(ords || []);
           saveLocal(list, ords || []);
+          setCloudReady(true);
+          setCloudError("");
+
+          // Live updates when another device changes data
+          const channel = client
+            .channel("products-orders-sync")
+            .on(
+              "postgres_changes",
+              { event: "*", schema: "public", table: "products" },
+              async () => {
+                const { data } = await client.from("products").select("*").order("name");
+                if (data) {
+                  const list2 = data.map(normalizeProduct);
+                  setProducts(list2);
+                  saveLocal(list2, loadLocal()?.orders || []);
+                }
+              }
+            )
+            .on(
+              "postgres_changes",
+              { event: "*", schema: "public", table: "orders" },
+              async () => {
+                const { data } = await client
+                  .from("orders")
+                  .select("*")
+                  .order("created_at", { ascending: false })
+                  .limit(100);
+                if (data) setOrders(data);
+              }
+            )
+            .subscribe();
+
+          return () => {
+            try {
+              client.removeChannel(channel);
+            } catch {}
+          };
         } catch (err) {
           console.error(err);
+          setCloudReady(false);
+          setCloudError(err?.message || String(err));
           const local = loadLocal();
           setProducts(local?.products || (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS));
           setOrders(local?.orders || []);
         }
       } else {
+        setCloudReady(false);
         const local = loadLocal();
         setProducts(local?.products || (await loadSharedProducts()) || structuredClone(DEFAULT_PRODUCTS));
         setOrders(local?.orders || []);
       }
       setLoading(false);
     }
-    init();
+    const cleanupPromise = init();
+    return () => {
+      // init may return a cleanup from inside async; best-effort
+      Promise.resolve(cleanupPromise).then((fn) => {
+        if (typeof fn === "function") fn();
+      });
+    };
   }, []);
 
   useEffect(() => {
@@ -947,7 +1032,13 @@ function App() {
 
       {!cloudReady && (
         <div className="publish-banner" role="status">
-          <p>Supabase مش مفعّل لسه — النظام شغال محلياً. فعّل Supabase من config.js عشان الكل يشوف نفس البيانات.</p>
+          <p>
+            السحابة مش شغالة الآن — التعديلات بتتخزن على هذا الجهاز فقط.
+            {cloudError ? ` (${cloudError})` : " شغّل supabase-schema.sql في Supabase لو لسه ماعملتهوش."}
+          </p>
+          <button type="button" className="btn btn-primary" onClick={reloadFromCloud}>
+            إعادة الاتصال
+          </button>
         </div>
       )}
       {toast && <div className="save-toast">{toast}</div>}
@@ -958,6 +1049,9 @@ function App() {
           <p className="brand-tag">أسعار · مخزون · طلبات · استيراد ذكي</p>
         </div>
         <div className="header-actions">
+          <button type="button" className="btn btn-ghost" onClick={reloadFromCloud} title="جلب آخر بيانات من Supabase">
+            تحديث
+          </button>
           <button type="button" className="btn btn-ghost" onClick={() => (isAdmin ? logoutAdmin() : setAdminOpen(true))}>
             {isAdmin ? "خروج الإدارة" : "دخول الإدارة"}
           </button>
@@ -1223,8 +1317,9 @@ function App() {
       <footer className="site-footer">
         <p>
           {cloudReady
-            ? "متصل بـ Supabase — المخزون والطلبات متزامنة."
-            : "وضع محلي — فعّل Supabase عشان الأجهزة كلها تشوف نفس البيانات."}
+            ? "متصل بـ Supabase — أي حفظ يظهر على كل الأجهزة (اضغط تحديث لو الصفحة قديمة)."
+            : "غير متصل بالسحابة — كل جهاز شايف بياناته المحلية فقط."}
+          {cloudError ? ` خطأ: ${cloudError}` : ""}
         </p>
       </footer>
 
