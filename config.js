@@ -1,19 +1,14 @@
 /* ========= Pro Business settings =========
  *
- * SUPABASE (recommended for stock + orders + Excel import):
- * 1) https://supabase.com → New project
- * 2) SQL Editor → paste supabase-schema.sql → Run
- * 3) Project Settings → API → copy Project URL + anon public key
- * 4) Paste below, set enabled: true, push to GitHub / redeploy Vercel
- *
- * Until Supabase is enabled, the app still works on this device (local save).
+ * SUPABASE connected.
+ * Make sure you ran supabase-schema.sql in SQL Editor once.
  */
 window.APP_CONFIG = {
   adminPin: "pro2026",
 
-  // Set true after pasting Supabase keys
-  enabled: false,
+  enabled: true,
 
-  supabaseUrl: "https://YOUR_PROJECT.supabase.co",
-  supabaseAnonKey: "YOUR_ANON_KEY",
+  supabaseUrl: "https://xnfwwhnwubnurewyvemm.supabase.co",
+  supabaseAnonKey:
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhuZndlaG53dWJudXJld3l2ZW1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4Mzk5MTMsImV4cCI6MjEwNTQxNTkxM30._co-yKB88F1NqCYzZiYirwvWdN7Og8_G0syHM01ByV8",
 };
