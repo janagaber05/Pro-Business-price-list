@@ -144,13 +144,17 @@ function createSupabase() {
 
 function mapHeader(header) {
   const h = String(header || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (/^(name|product|المنتج|اسم|الصنف)$/.test(h) || h.includes("منتج") || h.includes("اسم")) return "name";
+  if (/^(name|product|المنتج|اسم|الصنف|بيان|item)$/.test(h) || h.includes("منتج") || h.includes("اسم") || h.includes("صنف") || h.includes("بيان")) return "name";
   if (/category|تصنيف|قسم|نوع/.test(h)) return "category";
-  if (/30|٣٠/.test(h)) return "price30kg";
-  if (/10|١٠/.test(h)) return "price10kg";
-  if ((/1|١/.test(h) || /price|سعر/.test(h)) && /kg|كجم|كيلو|سعر/.test(h) && !/10|30|١٠|٣٠/.test(h)) return "price1kg";
-  if (/^price$|^سعر$/.test(h) || h === "سعر الكيلو") return "price1kg";
-  if (/qty|quantity|كمية|المخزون|متاح|stock/.test(h)) return "quantity";
+  // prices before quantity, so "كجم" alone doesn't steal price columns
+  if (/30|٣٠/.test(h) && /سعر|price|جنيه|جم|ج\.م|egp|للكيلو|كيلو/.test(h)) return "price30kg";
+  if (/10|١٠/.test(h) && /سعر|price|جنيه|جم|ج\.م|egp|للكيلو|كيلو/.test(h)) return "price10kg";
+  if (/30|٣٠/.test(h) && !/وزن|كمية|qty|stock|مخزون|متاح|رصيد/.test(h)) return "price30kg";
+  if (/10|١٠/.test(h) && !/وزن|كمية|qty|stock|مخزون|متاح|رصيد/.test(h)) return "price10kg";
+  if ((/1|١/.test(h) || /price|سعر/.test(h)) && /kg|كجم|كيلو|سعر|جنيه|egp/.test(h) && !/10|30|١٠|٣٠|وزن|كمية|مخزون/.test(h)) return "price1kg";
+  if (/^price$|^سعر$/.test(h) || h === "سعر الكيلو" || h === "السعر") return "price1kg";
+  // weight / stock / quantity (Arabic + English)
+  if (/qty|quantity|كمية|الكميه|الكميات|المخزون|متاح|stock|weight|وزن|الاوزان|الأوزان|رصيد|بالكجم|بالكيلو|عدد الكيلو/.test(h)) return "quantity";
   if (/note|ملاحظ/.test(h)) return "notes";
   return null;
 }
@@ -167,7 +171,7 @@ function parseSheetRows(aoa, products) {
     row.forEach((cell) => {
       if (mapHeader(cell)) score += 2;
       const t = String(cell || "");
-      if (/منتج|اسم|سعر|كمية|كجم|price|qty|product/i.test(t)) score += 1;
+      if (/منتج|اسم|صنف|بيان|سعر|كمية|كميه|وزن|مخزون|كجم|price|qty|product|weight|stock/i.test(t)) score += 1;
     });
     if (score > bestScore) {
       bestScore = score;
@@ -190,23 +194,38 @@ function parseSheetRows(aoa, products) {
     const name = String(line[col.name] ?? "").trim();
     if (!name) continue;
     if (/^total|الإجمالي|اجمالي|المجموع/i.test(name)) continue;
+    if (/^\d+(\.\d+)?$/.test(name)) continue; // skip pure numbers mistaken as names
     const categoryRaw = col.category !== undefined ? line[col.category] : "";
+    const qtyRaw = col.quantity !== undefined ? line[col.quantity] : null;
     const row = normalizeProduct({
       name,
       category: categoryRaw,
       price1kg: col.price1kg !== undefined ? line[col.price1kg] : null,
       price10kg: col.price10kg !== undefined ? line[col.price10kg] : null,
       price30kg: col.price30kg !== undefined ? line[col.price30kg] : null,
-      quantity: col.quantity !== undefined ? line[col.quantity] : 0,
+      quantity: qtyRaw === null || qtyRaw === "" ? null : qtyRaw,
       notes: col.notes !== undefined ? String(line[col.notes] ?? "") : "",
     });
-    if (!hasPrice(row.price1kg)) row.price1kg = 0;
-    const existing = products.find((p) => p.name === row.name);
-    row._status = existing ? "تحديث" : "جديد";
+    // keep null prices as null (don't force 0) — applyImport will preserve old prices
+    if (row.quantity === null || Number.isNaN(row.quantity)) row.quantity = 0;
+    const existing = products.find((p) => p.name === row.name || namesLooselyMatch(p.name, row.name));
+    row._status = existing ? "تحديث كمية/بيانات" : "جديد";
     row._existingId = existing?.id;
     rows.push(row);
   }
   return rows;
+}
+
+function namesLooselyMatch(a, b) {
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[أإآ]/g, "ا")
+      .replace(/ة/g, "ه")
+      .replace(/ى/g, "ي")
+      .replace(/\s+/g, "")
+      .trim();
+  return norm(a) && norm(a) === norm(b);
 }
 
 function extractJsonArray(text) {
@@ -238,11 +257,13 @@ Return ONLY a valid JSON array (no markdown). Each item:
 
 Rules:
 - Skip titles, totals, empty rows, and non-product lines.
-- Prices are PER KILOGRAM in EGP (not pack totals).
+- Many sheets have PRODUCT + WEIGHT/QUANTITY only (no prices). That is OK.
+- Put weight/stock values into "quantity" (number in kg). Look for columns like: كمية، وزن، مخزون، رصيد، كجم، weight, qty, stock.
+- Prices are PER KILOGRAM in EGP when present. If there is NO price column, set price1kg/price10kg/price30kg to null (do NOT invent 0 unless the cell is really 0).
 - If only one price exists, put it in price1kg.
-- quantity is current stock in kg; use 0 if unknown.
 - Guess category from the product name when missing.
 - Keep Arabic product names as written.
+- Never drop a row just because price is missing if name + quantity/weight exist.
 
 Spreadsheet rows (JSON array of arrays):
 ${JSON.stringify(trimmed)}`;
@@ -307,9 +328,13 @@ function rowsFromAIProducts(aiProducts, products) {
     .map((p) => {
       const row = normalizeProduct(p);
       if (!row.name) return null;
-      if (!hasPrice(row.price1kg)) row.price1kg = 0;
-      const existing = products.find((x) => x.name === row.name);
-      row._status = existing ? "تحديث" : "جديد";
+      // do not force missing prices to 0
+      if (!hasPrice(row.price1kg)) row.price1kg = null;
+      if (!hasPrice(row.price10kg)) row.price10kg = null;
+      if (!hasPrice(row.price30kg)) row.price30kg = null;
+      if (row.quantity === null || Number.isNaN(Number(row.quantity))) row.quantity = 0;
+      const existing = products.find((x) => x.name === row.name || namesLooselyMatch(x.name, row.name));
+      row._status = existing ? "تحديث كمية/بيانات" : "جديد";
       row._existingId = existing?.id;
       row._via = "AI";
       return row;
@@ -618,13 +643,29 @@ function App() {
     if (!isAdmin || !importRows.length) return;
     let next = [...products];
     for (const row of importRows) {
-      const entry = normalizeProduct({ ...row, id: row._existingId || uid("p") });
-      if (row._existingId) {
-        const prev = next.find((p) => p.id === row._existingId);
-        if (prev && !hasPrice(entry.price10kg)) entry.price10kg = prev.price10kg;
-        if (prev && !hasPrice(entry.price30kg)) entry.price30kg = prev.price30kg;
-        next = next.map((p) => (p.id === entry.id ? entry : p));
+      const existing =
+        (row._existingId && next.find((p) => p.id === row._existingId)) ||
+        next.find((p) => p.name === row.name || namesLooselyMatch(p.name, row.name));
+
+      if (existing) {
+        const entry = {
+          ...existing,
+          // update quantity from sheet
+          quantity: row.quantity !== null && row.quantity !== undefined ? Number(row.quantity) || 0 : existing.quantity,
+          // only overwrite prices when the sheet actually has them
+          price1kg: hasPrice(row.price1kg) ? Number(row.price1kg) : existing.price1kg,
+          price10kg: hasPrice(row.price10kg) ? Number(row.price10kg) : existing.price10kg,
+          price30kg: hasPrice(row.price30kg) ? Number(row.price30kg) : existing.price30kg,
+          notes: row.notes || existing.notes,
+          category: row.category || existing.category,
+        };
+        next = next.map((p) => (p.id === existing.id ? entry : p));
       } else {
+        const entry = normalizeProduct({
+          ...row,
+          id: uid("p"),
+          price1kg: hasPrice(row.price1kg) ? row.price1kg : 0,
+        });
         next.push(entry);
       }
     }

@@ -54,11 +54,13 @@ Return ONLY a valid JSON array (no markdown). Each item:
 
 Rules:
 - Skip titles, totals, empty rows, and non-product lines.
-- Prices are PER KILOGRAM in EGP (not pack totals).
+- Many sheets have PRODUCT + WEIGHT/QUANTITY only (no prices). That is OK.
+- Put weight/stock values into "quantity" (number in kg). Look for columns like: كمية، وزن، مخزون، رصيد، كجم، weight, qty, stock.
+- Prices are PER KILOGRAM in EGP when present. If there is NO price column, set price1kg/price10kg/price30kg to null (do NOT invent 0 unless the cell is really 0).
 - If only one price exists, put it in price1kg.
-- quantity is current stock in kg; use 0 if unknown.
 - Guess category from the product name when missing.
 - Keep Arabic product names as written.
+- Never drop a row just because price is missing if name + quantity/weight exist.
 
 Spreadsheet rows (JSON array of arrays):
 ${JSON.stringify(trimmed)}`;
