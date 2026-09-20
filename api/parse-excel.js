@@ -1,6 +1,6 @@
 /**
- * Vercel serverless: real AI Excel → products
- * Set env var: OPENAI_API_KEY
+ * Vercel serverless: Gemini AI Excel → products (free tier)
+ * Set env var: GEMINI_API_KEY
  */
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -15,10 +15,10 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
-      error: "OPENAI_API_KEY is not set on Vercel. Add it in Project Settings → Environment Variables.",
+      error: "GEMINI_API_KEY is not set on Vercel. Add it in Project Settings → Environment Variables.",
     });
   }
 
@@ -29,17 +29,17 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: "Missing sheet data" });
     }
 
-    const products = await extractProductsWithOpenAI(apiKey, sheet);
-    return res.status(200).json({ products, source: "openai" });
+    const products = await extractProductsWithGemini(apiKey, sheet);
+    return res.status(200).json({ products, source: "gemini" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: err.message || "AI parse failed" });
   }
 };
 
-async function extractProductsWithOpenAI(apiKey, sheet) {
+function buildPrompt(sheet) {
   const trimmed = sheet.slice(0, 100);
-  const prompt = `You extract product rows from messy Arabic/English spreadsheets for a freeze-dried food wholesaler in Egypt (Pro Business).
+  return `You extract product rows from messy Arabic/English spreadsheets for a freeze-dried food wholesaler in Egypt (Pro Business).
 
 Return ONLY a valid JSON array (no markdown). Each item:
 {
@@ -62,34 +62,38 @@ Rules:
 
 Spreadsheet rows (JSON array of arrays):
 ${JSON.stringify(trimmed)}`;
+}
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+async function extractProductsWithGemini(apiKey, sheet) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content: "You are a precise data-extraction engine. Output JSON arrays only.",
-        },
-        { role: "user", content: prompt },
-      ],
+      contents: [{ role: "user", parts: [{ text: buildPrompt(sheet) }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenAI error ${response.status}: ${text.slice(0, 300)}`);
+    throw new Error(`Gemini error ${response.status}: ${text.slice(0, 300)}`);
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "[]";
-  const jsonText = content.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "").trim();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+  const cleaned = String(content)
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  const jsonText = start >= 0 && end >= 0 ? cleaned.slice(start, end + 1) : cleaned;
   const parsed = JSON.parse(jsonText);
   if (!Array.isArray(parsed)) throw new Error("AI did not return an array");
   return parsed;

@@ -221,7 +221,7 @@ function extractJsonArray(text) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-async function callOpenAIDirect(apiKey, sheet) {
+async function callGeminiDirect(apiKey, sheet) {
   const trimmed = sheet.slice(0, 100);
   const prompt = `You extract product rows from messy Arabic/English spreadsheets for a freeze-dried food wholesaler in Egypt (Pro Business).
 
@@ -247,32 +247,26 @@ Rules:
 Spreadsheet rows (JSON array of arrays):
 ${JSON.stringify(trimmed)}`;
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content: "You are a precise data-extraction engine. Output JSON arrays only.",
-        },
-        { role: "user", content: prompt },
-      ],
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenAI error ${response.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Gemini error ${response.status}: ${text.slice(0, 200)}`);
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "[]";
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
   return extractJsonArray(content);
 }
 
@@ -296,10 +290,10 @@ async function parseWithRealAI(aoa) {
     // local static server has no /api — fall through
   }
 
-  // 2) Direct OpenAI from browser (local npm start)
-  const key = window.APP_CONFIG?.openAiApiKey;
-  if (key && String(key).startsWith("sk-")) {
-    const products = await callOpenAIDirect(key, sheet);
+  // 2) Direct Gemini from browser (local npm start)
+  const key = window.APP_CONFIG?.geminiApiKey;
+  if (key && String(key).trim()) {
+    const products = await callGeminiDirect(String(key).trim(), sheet);
     if (Array.isArray(products) && products.length) {
       return { products, source: "ai" };
     }
@@ -601,7 +595,7 @@ function App() {
 
       if (!rows.length) {
         alert(
-          "لم يتم التعرف على صفوف صالحة.\n\nللذكاء الحقيقي: أضف مفتاح OpenAI في config.js (openAiApiKey) أو في Vercel كـ OPENAI_API_KEY.\nأو استخدم جدول فيه عمود اسم المنتج."
+          "لم يتم التعرف على صفوف صالحة.\n\nللذكاء الحقيقي (مجاني): أضف مفتاح Gemini في config.js (geminiApiKey) من https://aistudio.google.com/apikey\nأو استخدم جدول فيه عمود اسم المنتج."
         );
         return;
       }
@@ -924,9 +918,9 @@ function App() {
         {view === "import" && (
           <section className="view">
             <div className="panel">
-              <h2>استيراد ذكي من Excel (AI)</h2>
+              <h2>استيراد ذكي من Excel (Gemini AI)</h2>
               <p className="panel-hint">
-                ارفع Excel أو CSV. النظام يستخدم <strong>OpenAI</strong> لفهم الجدول حتى لو العناوين غير مرتبة،
+                ارفع Excel أو CSV. النظام يستخدم <strong>Google Gemini</strong> (مجاني) لفهم الجدول حتى لو العناوين غير مرتبة،
                 ويعرض معاينة قبل الحفظ. لو مفيش مفتاح AI، يستخدم القواعد الذكية كاحتياطي.
               </p>
               {isAdmin ? (
