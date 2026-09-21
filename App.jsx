@@ -41,6 +41,30 @@ function uid(prefix = "p") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function Modal({ onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal-root" role="presentation">
+      <button type="button" className="modal-backdrop" aria-label="إغلاق" onClick={onClose} />
+      <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function getAdminPin() {
   return window.APP_CONFIG?.adminPin || "pro2026";
 }
@@ -1201,13 +1225,27 @@ function App() {
                         <span>المخزون</span>
                         <strong>{formatQty(product.quantity)}</strong>
                       </div>
-                      {isAdmin && (
+                      {isAdmin ? (
                         <div className="row-actions">
-                          <button type="button" className="icon-btn edit" onClick={() => openEdit(product)}>
+                          <button type="button" className="icon-btn edit" onClick={() => openEdit(product)} title="تعديل">
                             ✎
                           </button>
-                          <button type="button" className="icon-btn delete" onClick={() => deleteProduct(product.id)}>
+                          <button type="button" className="icon-btn delete" onClick={() => deleteProduct(product.id)} title="حذف">
                             ✕
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            className="icon-btn edit"
+                            title="سجّل دخول الإدارة للتعديل"
+                            onClick={() => {
+                              showToast("سجّل دخول الإدارة أولاً عشان تعدّل");
+                              setAdminOpen(true);
+                            }}
+                          >
+                            ✎
                           </button>
                         </div>
                       )}
@@ -1361,7 +1399,7 @@ function App() {
       </footer>
 
       {adminOpen && (
-        <dialog open className="modal" onClose={() => setAdminOpen(false)}>
+        <Modal onClose={() => setAdminOpen(false)}>
           <form className="export-panel" onSubmit={loginAdmin}>
             <h2>دخول الإدارة</h2>
             <p className="export-hint">رمز الإدارة مطلوب للتعديل والطلبات والاستيراد.</p>
@@ -1379,7 +1417,7 @@ function App() {
               </button>
             </div>
           </form>
-        </dialog>
+        </Modal>
       )}
 
       {exportOpen && (
@@ -1393,7 +1431,7 @@ function App() {
       )}
 
       {productOpen && (
-        <dialog open className="modal">
+        <Modal onClose={() => setProductOpen(false)}>
           <form onSubmit={saveProduct}>
             <h2>{editing ? "تعديل منتج" : "إضافة منتج"}</h2>
             <label>
@@ -1439,7 +1477,7 @@ function App() {
               </button>
             </div>
           </form>
-        </dialog>
+        </Modal>
       )}
     </>
   );
@@ -1450,7 +1488,7 @@ function ExportDialog({ onClose, onDownload }) {
   const [onlyFiltered, setOnlyFiltered] = useState(false);
   const [includeStock, setIncludeStock] = useState(false);
   return (
-    <dialog open className="modal">
+    <Modal onClose={onClose}>
       <div className="export-panel">
         <h2>مشاركة قائمة الأسعار</h2>
         <p className="export-hint">حمّل جدولاً لإرساله للعملاء (بدون مخزون بشكل افتراضي).</p>
@@ -1491,7 +1529,7 @@ function ExportDialog({ onClose, onDownload }) {
           </button>
         </div>
       </div>
-    </dialog>
+    </Modal>
   );
 }
 

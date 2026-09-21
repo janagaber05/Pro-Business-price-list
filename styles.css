@@ -374,18 +374,41 @@ main,
   font-size: 0.9rem;
 }
 
+.modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: rgba(18, 32, 27, 0.45);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
 .modal {
+  position: relative;
+  z-index: 1;
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 0;
   width: min(480px, calc(100% - 2rem));
+  max-height: min(92vh, 900px);
+  overflow: auto;
   background: #fbfdfc;
   box-shadow: 0 30px 80px rgba(20, 36, 31, 0.25);
 }
 
-.modal::backdrop {
-  background: rgba(18, 32, 27, 0.45);
-  backdrop-filter: blur(4px);
+.modal-root .modal {
+  width: min(480px, 100%);
 }
 
 .modal form {
