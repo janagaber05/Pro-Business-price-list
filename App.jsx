@@ -42,23 +42,38 @@ function uid(prefix = "p") {
 }
 
 function Modal({ onClose, children }) {
+  const canCloseRef = React.useRef(false);
+
   useEffect(() => {
+    canCloseRef.current = false;
+    // Prevent the same click that opened the modal from immediately closing it
+    const enableTimer = setTimeout(() => {
+      canCloseRef.current = true;
+    }, 150);
+
     const onKey = (e) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && canCloseRef.current) onClose();
     };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
+      clearTimeout(enableTimer);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
   }, [onClose]);
 
+  function requestClose(e) {
+    if (e) e.preventDefault();
+    if (!canCloseRef.current) return;
+    onClose();
+  }
+
   return (
     <div className="modal-root" role="presentation">
-      <button type="button" className="modal-backdrop" aria-label="إغلاق" onClick={onClose} />
-      <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+      <button type="button" className="modal-backdrop" aria-label="إغلاق" onClick={requestClose} />
+      <div className="modal-card" role="dialog" aria-modal="true">
         {children}
       </div>
     </div>
@@ -806,7 +821,8 @@ function App() {
   function openCreate() {
     setEditing(null);
     setForm({ name: "", category: "fruits", price1kg: "", price10kg: "", price30kg: "", quantity: "0", notes: "" });
-    setProductOpen(true);
+    // Defer open so the click that triggered this cannot close the modal instantly
+    setTimeout(() => setProductOpen(true), 0);
   }
 
   function openEdit(product) {
@@ -820,7 +836,7 @@ function App() {
       quantity: String(product.quantity ?? 0),
       notes: product.notes || "",
     });
-    setProductOpen(true);
+    setTimeout(() => setProductOpen(true), 0);
   }
 
   async function saveProduct(e) {
@@ -1113,7 +1129,14 @@ function App() {
           <button type="button" className="btn btn-ghost" onClick={reloadFromCloud} title="جلب آخر بيانات من Supabase">
             تحديث
           </button>
-          <button type="button" className="btn btn-ghost" onClick={() => (isAdmin ? logoutAdmin() : setAdminOpen(true))}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              if (isAdmin) logoutAdmin();
+              else setTimeout(() => setAdminOpen(true), 0);
+            }}
+          >
             {isAdmin ? "خروج الإدارة" : "دخول الإدارة"}
           </button>
           <button type="button" className="btn btn-ghost" onClick={() => setExportOpen(true)}>
@@ -1227,7 +1250,16 @@ function App() {
                       </div>
                       {isAdmin ? (
                         <div className="row-actions">
-                          <button type="button" className="icon-btn edit" onClick={() => openEdit(product)} title="تعديل">
+                          <button
+                            type="button"
+                            className="icon-btn edit"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openEdit(product);
+                            }}
+                            title="تعديل"
+                          >
                             ✎
                           </button>
                           <button type="button" className="icon-btn delete" onClick={() => deleteProduct(product.id)} title="حذف">
@@ -1240,9 +1272,11 @@ function App() {
                             type="button"
                             className="icon-btn edit"
                             title="سجّل دخول الإدارة للتعديل"
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
                               showToast("سجّل دخول الإدارة أولاً عشان تعدّل");
-                              setAdminOpen(true);
+                              setTimeout(() => setAdminOpen(true), 0);
                             }}
                           >
                             ✎

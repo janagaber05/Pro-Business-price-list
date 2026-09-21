@@ -386,6 +386,7 @@ main,
 .modal-backdrop {
   position: absolute;
   inset: 0;
+  z-index: 0;
   border: 0;
   padding: 0;
   margin: 0;
@@ -394,6 +395,7 @@ main,
   cursor: pointer;
 }
 
+.modal-card,
 .modal {
   position: relative;
   z-index: 1;
@@ -407,24 +409,28 @@ main,
   box-shadow: 0 30px 80px rgba(20, 36, 31, 0.25);
 }
 
+.modal-root .modal-card,
 .modal-root .modal {
   width: min(480px, 100%);
 }
 
-.modal form {
+.modal form,
+.modal-card form {
   display: grid;
   gap: 0.9rem;
   padding: 1.4rem 1.4rem 1.25rem;
 }
 
-.modal h2 {
+.modal h2,
+.modal-card h2 {
   margin: 0 0 0.25rem;
   font-family: var(--font-display);
   font-size: 1.55rem;
   letter-spacing: -0.02em;
 }
 
-.modal label {
+.modal label,
+.modal-card label {
   display: grid;
   gap: 0.35rem;
   font-size: 0.9rem;
