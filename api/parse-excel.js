@@ -67,14 +67,17 @@ function sheetToAiText(aoa) {
 }
 
 function buildPrompt(sheet, text) {
-  return `You are an expert at reading ANY messy Arabic/English Excel inventory or price sheet for an Egyptian freeze-dried food business (Pro Business).
+  return `You are an expert at reading ANY messy Arabic/English Excel for an Egyptian freeze-dried food business (Pro Business).
 
-The sheet may contain:
-- titles and dates
-- multiple sections (imported fruits, local fruits, candy, vegetables, raw materials)
-- TWO tables side-by-side
-- columns like: اسم الصنف, الوحده, الكميه المباعه, الكميه المتبقيه الصالحه للبيع, الرصيد
-- NO prices at all (quantity-only daily reports) — that is normal
+Sheet types you MUST distinguish:
+A) Inventory reports (التقرير اليومي): اسم الصنف + الكميه المتبقيه / الرصيد — often NO prices.
+B) Price lists: product + سعر / سعر الكيلو (1kg), sometimes 10kg / 30kg.
+C) Customer ORDERS / invoices (طلبية / فاتورة):
+   - الصنف = product name
+   - الكمية = ORDER quantity in kg (usually small: 2, 5, 10…)
+   - سعر الكيلو = PRICE PER KG in EGP (usually hundreds/thousands: 550, 1250, 1700…)
+   - المبلغ / السعر بعد الخصم = LINE TOTAL (qty × price) — NOT unit price, NOT quantity
+   - نسبة الخصم = ignore
 
 Return ONLY a valid JSON array. Each item:
 {
@@ -88,13 +91,15 @@ Return ONLY a valid JSON array. Each item:
 }
 
 Critical rules:
-1) Extract EVERY product row from ALL sections and BOTH left/right tables.
-2) For stock/quantity prefer: "الكميه المتبقيه الصالحه للبيع" or "الرصيد" (NOT "الكميه المباعه").
-3) If there is no price column, set all prices to null (do not invent zeros as prices).
-4) quantity must be the remaining/balance number in kg when present (0 is valid).
-5) Skip totals, tasks/notes paragraphs, empty rows, and section titles.
-6) Keep Arabic names exactly as written.
-7) Guess category from the product name / section title.
+1) NEVER put "سعر الكيلو" into "quantity".
+2) NEVER put "المبلغ" or "السعر بعد الخصم" into price1kg or quantity.
+3) Order mapping: سعر الكيلو → price1kg, الكمية → quantity. One price column = price1kg unless header says 10/30.
+4) Inventory: prefer المتبقي/الرصيد for quantity; null prices if missing.
+5) Extract every product row. Keep Arabic names. Skip totals/titles.
+6) Category: مارشميلو/موتشي/كاندي → candy; تفاح/موز → fruits; خضار → vegetables.
+
+Example: تفاح | qty 10 | سعر الكيلو 1700 | مبلغ 17000
+→ {"name":"تفاح","category":"fruits","price1kg":1700,"price10kg":null,"price30kg":null,"quantity":10,"notes":""}
 
 Sheet cells:
 ${text || sheetToAiText(sheet)}`;

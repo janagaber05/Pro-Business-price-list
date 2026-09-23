@@ -271,17 +271,83 @@ function cellText(v) {
 
 function isNameHeader(text) {
   const h = cellText(text);
-  return /اسم\s*الصنف|اسم المنتج|الصنف|المنتج|product\s*name|^item$|^name$/i.test(h);
+  return /اسم\s*الصنف|اسم المنتج|^الصنف$|المنتج|product\s*name|^item$|^name$|البيان/i.test(h);
+}
+
+function isPriceHeader(text) {
+  const h = cellText(text);
+  if (!h) return false;
+  // Line totals / discounts are NOT unit prices
+  if (/مبلغ|amount|بعد\s*الخصم|نسبة\s*الخصم|^خصم$|discount|total|اجمالي|الإجمالي|المجموع/i.test(h) && !/سعر\s*الكيلو|سعر\s*الوحد/i.test(h)) {
+    return false;
+  }
+  return /سعر\s*الكيلو|سعر\s*الوحده|سعر\s*الوحدة|سعر\s*كجم|price\s*per|unit\s*price|^سعر$|^price$|للكيلو/i.test(h) || (/سعر|price/i.test(h) && /كجم|كيلو|1|١/i.test(h));
+}
+
+function isLineTotalHeader(text) {
+  const h = cellText(text);
+  return /مبلغ|amount|بعد\s*الخصم|اجمالي|الإجمالي|المجموع|total/i.test(h) && !/سعر\s*الكيلو/i.test(h);
 }
 
 function qtyScore(text) {
   const h = cellText(text);
   if (!h) return 0;
-  // Prefer remaining/sellable/balance over sold
+  // NEVER treat price / money columns as quantity (fixes "سعر الكيلو" → qty bug)
+  if (/سعر|price|مبلغ|خصم|جنيه|egp|amount|discount|total|اجمالي|الإجمالي|المجموع/i.test(h)) return 0;
   if (/متبقي|متبقيه|صالح|رصيد|مخزون|متاح|stock|remaining|balance|on\s*hand/i.test(h)) return 5;
-  if (/كمية|كميه|وزن|qty|quantity|weight|كجم|كيلو/i.test(h) && !/مباع|sold|بيع/i.test(h)) return 3;
+  if (/^الكمية$|^الكميه$|^كمية$|^كميه$|كمية|كميه|qty|quantity|وزن|weight/i.test(h) && !/مباع|sold/i.test(h)) return 4;
   if (/مباع|sold/i.test(h)) return 1;
   return 0;
+}
+
+function sheetLooksLikeOrder(aoa) {
+  const text = (aoa || [])
+    .slice(0, 20)
+    .flat()
+    .map(cellText)
+    .join(" ");
+  return /طلبية|طلبيه|فاتورة|فاتوره|سعر\s*الكيلو|نسبة\s*الخصم|السعر\s*بعد\s*الخصم|المبلغ/i.test(text);
+}
+
+function sheetLooksLikeInventory(aoa) {
+  const text = (aoa || [])
+    .slice(0, 20)
+    .flat()
+    .map(cellText)
+    .join(" ");
+  return /متبقي|رصيد|مخزون|التقرير\s*اليومي|الكميه المتبقيه|الكميه المباعه/i.test(text);
+}
+
+function importQualityScore(rows) {
+  if (!rows?.length) return -1;
+  let score = rows.length;
+  let withPrice = 0;
+  let suspiciousQty = 0;
+  for (const r of rows) {
+    if (hasPrice(r.price1kg) || hasPrice(r.price10kg) || hasPrice(r.price30kg)) withPrice += 1;
+    // Prices mistaken as qty are usually hundreds/thousands
+    if (Number(r.quantity) >= 200 && !hasPrice(r.price1kg)) suspiciousQty += 1;
+  }
+  score += withPrice * 12;
+  score -= suspiciousQty * 8;
+  return score;
+}
+
+/** If AI swapped سعر الكيلو into quantity, repair it. */
+function fixSwappedPriceAndQty(row) {
+  const qty = Number(row.quantity);
+  const p1 = row.price1kg == null || row.price1kg === "" ? null : Number(row.price1kg);
+  // Typical mistake on order sheets: quantity=1700, price1kg=10 or null
+  if (!Number.isNaN(qty) && qty >= 200) {
+    if (p1 == null || Number.isNaN(p1) || (p1 > 0 && p1 < 100 && qty > p1 * 5)) {
+      const maybePrice = qty;
+      const maybeQty = p1 != null && !Number.isNaN(p1) && p1 < 200 ? p1 : 0;
+      row.price1kg = maybePrice;
+      row.quantity = maybeQty;
+      row._repaired = "swapped-price-qty";
+    }
+  }
+  return row;
 }
 
 function isSectionTitle(text) {
@@ -296,10 +362,10 @@ function isSectionTitle(text) {
 function isJunkName(name) {
   const h = cellText(name);
   if (!h) return true;
-  if (isNameHeader(h) || qtyScore(h) > 0) return true;
+  if (isNameHeader(h) || qtyScore(h) > 0 || isPriceHeader(h) || isLineTotalHeader(h)) return true;
   if (isSectionTitle(h)) return true;
-  if (/^total|اجمالي|الإجمالي|المجموع|عينه|عينات|مهام|تجهيز|تنظيف|تعبئه|تعبئة|غدا|تسجيل/i.test(h)) return true;
-  if (/^\d+(\.\d+)?$/.test(h)) return true;
+  if (/^total|اجمالي|الإجمالي|المجموع|عينه|عينات|مهام|تجهيز|تنظيف|تعبئه|تعبئة|غدا|تسجيل|م|نسبة/i.test(h)) return true;
+  if (/^\d+(\.\d+)?%?$/.test(h)) return true;
   if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(h)) return true;
   return false;
 }
@@ -441,14 +507,19 @@ function extractInventoryTables(aoa, products) {
 }
 
 function mapHeader(header) {
-  const h = cellText(header).toLowerCase();
+  const h = cellText(header);
+  const low = h.toLowerCase();
   if (isNameHeader(h)) return "name";
-  if (/category|تصنيف|قسم|نوع/.test(h)) return "category";
-  if (/30|٣٠/.test(h) && /سعر|price|جنيه|egp|للكيلو/.test(h)) return "price30kg";
-  if (/10|١٠/.test(h) && /سعر|price|جنيه|egp|للكيلو/.test(h)) return "price10kg";
-  if ((/1|١/.test(h) || /price|سعر/.test(h)) && /سعر|price|جنيه|egp|للكيلو|كجم/.test(h) && !/10|30|١٠|٣٠|متبقي|رصيد|مباع/.test(h)) return "price1kg";
+  if (/category|تصنيف|قسم|نوع/.test(low)) return "category";
+  // Ignore invoice totals & discounts — not product price-per-kg
+  if (isLineTotalHeader(h) || /نسبة\s*الخصم|خصم\s*%|discount/i.test(h)) return null;
+  if (/30|٣٠/.test(h) && /سعر|price|جنيه|egp|للكيلو|كجم|كيلو/.test(low)) return "price30kg";
+  if (/10|١٠/.test(h) && /سعر|price|جنيه|egp|للكيلو|كجم|كيلو/.test(low)) return "price10kg";
+  if (/سعر\s*الكيلو|سعر\s*الوحده|سعر\s*الوحدة|سعر\s*كجم|price\s*per\s*kg|unit\s*price/i.test(h)) return "price1kg";
+  if (/سعر|price/.test(low) && /كجم|كيلو|للكيلو|1|١/.test(h) && !/10|30|١٠|٣٠/.test(h)) return "price1kg";
+  if (/^سعر$|^price$/i.test(h)) return "price1kg";
   if (qtyScore(h) >= 3) return "quantity";
-  if (/note|ملاحظ/.test(h)) return "notes";
+  if (/note|ملاحظ/.test(low)) return "notes";
   return null;
 }
 
@@ -500,6 +571,7 @@ function parseSheetRows(aoa, products) {
   }
 
   const rows = [];
+  const orderSheet = sheetLooksLikeOrder(aoa) && !sheetLooksLikeInventory(aoa);
   for (let r = headerIndex + 1; r < aoa.length; r++) {
     const line = aoa[r];
     if (!line || !line.length) continue;
@@ -507,7 +579,7 @@ function parseSheetRows(aoa, products) {
     if (!name || isJunkName(name)) continue;
     const categoryRaw = col.category !== undefined ? line[col.category] : "";
     const qtyRaw = col.quantity !== undefined ? line[col.quantity] : null;
-    const row = normalizeProduct({
+    let row = normalizeProduct({
       name,
       category: categoryRaw,
       price1kg: col.price1kg !== undefined ? line[col.price1kg] : null,
@@ -516,9 +588,17 @@ function parseSheetRows(aoa, products) {
       quantity: qtyRaw === null || qtyRaw === "" ? null : qtyRaw,
       notes: col.notes !== undefined ? String(line[col.notes] ?? "") : "",
     });
+    row = fixSwappedPriceAndQty(row);
     if (row.quantity === null || Number.isNaN(row.quantity)) row.quantity = 0;
     const existing = findExistingProduct(products, row.name);
-    row._status = existing ? "تحديث كمية/بيانات" : "جديد";
+    if (orderSheet && hasPrice(row.price1kg)) {
+      const ordered = row.quantity;
+      row.notes = [row.notes, ordered ? `كمية الطلبية: ${ordered} كجم` : ""].filter(Boolean).join(" — ");
+      row._skipStock = true; // don't overwrite warehouse stock with order qty
+      row._status = existing ? "تحديث سعر (طلبية)" : "جديد من طلبية";
+    } else {
+      row._status = existing ? "تحديث كمية/بيانات" : "جديد";
+    }
     row._existingId = existing?.id;
     rows.push(row);
   }
@@ -543,14 +623,17 @@ function sheetToAiText(aoa) {
 }
 
 function buildGeminiPrompt(aoa) {
-  return `You are an expert at reading ANY messy Arabic/English Excel inventory or price sheet for an Egyptian freeze-dried food business (Pro Business).
+  return `You are an expert at reading ANY messy Arabic/English Excel for an Egyptian freeze-dried food business (Pro Business).
 
-The sheet may contain:
-- titles and dates
-- multiple sections (imported fruits, local fruits, candy, vegetables, raw materials)
-- TWO tables side-by-side
-- columns like: اسم الصنف, الوحده, الكميه المباعه, الكميه المتبقيه الصالحه للبيع, الرصيد
-- NO prices at all (quantity-only daily reports) — that is normal
+Sheet types you MUST distinguish:
+A) Inventory reports (التقرير اليومي): columns like اسم الصنف + الكميه المتبقيه / الرصيد — often NO prices.
+B) Price lists: product + سعر / سعر الكيلو for 1kg, sometimes 10kg / 30kg.
+C) Customer ORDERS / invoices (طلبية / فاتورة) like "طلبية البلتاجي":
+   - الصنف = product name
+   - الكمية = ORDER quantity in kg (usually small: 2, 5, 10…)
+   - سعر الكيلو = PRICE PER KG in EGP (usually hundreds/thousands: 550, 1250, 1700…)
+   - المبلغ / السعر بعد الخصم = LINE TOTAL (qty × price) — NOT a unit price, NOT quantity
+   - نسبة الخصم = discount % — ignore for product fields
 
 Return ONLY a valid JSON array. Each item:
 {
@@ -564,13 +647,18 @@ Return ONLY a valid JSON array. Each item:
 }
 
 Critical rules:
-1) Extract EVERY product row you can find from ALL sections and BOTH left/right tables.
-2) For stock/quantity prefer: "الكميه المتبقيه الصالحه للبيع" or "الرصيد" (NOT "الكميه المباعه").
-3) If there is no price column, set all prices to null (do not invent zeros as prices).
-4) quantity must be the remaining/balance number in kg when present (0 is valid).
-5) Skip totals, tasks/notes paragraphs, empty rows, and section titles.
-6) Keep Arabic names exactly as written.
-7) Guess category from the product name / section title.
+1) NEVER put "سعر الكيلو" values into "quantity".
+2) NEVER put "المبلغ" or "السعر بعد الخصم" into price1kg or quantity.
+3) Mapping for order sheets:
+   - سعر الكيلو → price1kg
+   - الكمية → quantity
+   - If only one price column exists, it is price1kg (1 kg rate), not 10kg/30kg unless header says so.
+4) For inventory sheets: prefer المتبقي/الرصيد for quantity; prices null if missing.
+5) Extract EVERY product row. Keep Arabic names exactly. Skip totals/titles/empty rows.
+6) Guess category from the name (مارشميلو/موتشي/كاندي → candy, تفاح/موز → fruits, خضار → vegetables).
+
+Example (order row): تفاح | qty 10 | سعر الكيلو 1700 | مبلغ 17000
+→ {"name":"تفاح","category":"fruits","price1kg":1700,"price10kg":null,"price30kg":null,"quantity":10,"notes":""}
 
 Sheet cells:
 ${sheetToAiText(aoa)}`;
@@ -645,14 +733,19 @@ async function parseWithRealAI(aoa) {
 function rowsFromAIProducts(aiProducts, products) {
   return aiProducts
     .map((p) => {
-      const row = normalizeProduct(p);
+      let row = normalizeProduct(p);
       if (!row.name || isJunkName(row.name)) return null;
+      row = fixSwappedPriceAndQty(row);
       if (!hasPrice(row.price1kg)) row.price1kg = null;
       if (!hasPrice(row.price10kg)) row.price10kg = null;
       if (!hasPrice(row.price30kg)) row.price30kg = null;
       if (row.quantity === null || Number.isNaN(Number(row.quantity))) row.quantity = 0;
       const existing = findExistingProduct(products, row.name);
-      row._status = existing ? "تحديث كمية/بيانات" : "جديد";
+      row._status = existing
+        ? hasPrice(row.price1kg)
+          ? "تحديث سعر/بيانات"
+          : "تحديث كمية/بيانات"
+        : "جديد";
       row._existingId = existing?.id;
       row._via = "AI";
       return row;
@@ -936,39 +1029,60 @@ function App() {
       let rows = [];
       let source = "rules";
 
-      // Always run structural inventory parser (works for التقرير اليومي and similar)
-      const inventoryRows = extractInventoryTables(aoa, products);
+      const orderLike = sheetLooksLikeOrder(aoa);
+      const inventoryLike = sheetLooksLikeInventory(aoa);
+      const inventoryRows = inventoryLike ? extractInventoryTables(aoa, products) : [];
+      const ruleRows = parseSheetRows(aoa, products);
 
       try {
         const ai = await parseWithRealAI(aoa);
         if (ai?.products?.length) {
           rows = rowsFromAIProducts(ai.products, products);
+          if (orderLike && !inventoryLike) {
+            rows = rows.map((r) => {
+              if (!hasPrice(r.price1kg)) return r;
+              const ordered = Number(r.quantity) || 0;
+              return {
+                ...r,
+                notes: [r.notes, ordered ? `كمية الطلبية: ${ordered} كجم` : ""].filter(Boolean).join(" — "),
+                _skipStock: true,
+                _status: r._existingId ? "تحديث سعر (طلبية)" : "جديد من طلبية",
+              };
+            });
+          }
           source = "ai";
         }
       } catch (aiErr) {
         console.error(aiErr);
       }
 
-      // Prefer whichever extracted more real stock rows; inventory parser is strong for Arabic reports
-      if (inventoryRows.length && inventoryRows.length >= (rows.length || 0)) {
-        rows = inventoryRows;
-        source = "inventory";
-      } else if (!rows.length) {
-        rows = parseSheetRows(aoa, products);
-        source = "rules";
-      }
+      // Pick the best interpretation — never let inventory parser steal order price sheets
+      const candidates = [
+        { rows, source },
+        { rows: ruleRows, source: "rules" },
+        { rows: inventoryRows, source: "inventory" },
+      ];
+      candidates.sort((a, b) => importQualityScore(b.rows) - importQualityScore(a.rows));
+      const best = candidates.find((c) => c.rows?.length) || { rows: [], source: "rules" };
+      rows = best.rows;
+      source = best.source;
 
       if (!rows.length) {
         alert(
-          "لم يتم التعرف على صفوف صالحة.\n\nالملف لازم فيه أسماء أصناف + كمية/رصيد.\nلو عندك Gemini key في config.js هيساعد يفهم أي شكل تقريباً."
+          "لم يتم التعرف على صفوف صالحة.\n\nالملف لازم فيه أسماء أصناف + (سعر و/أو كمية).\nلو عندك Gemini key في config.js هيساعد يفهم أي شكل تقريباً."
         );
         return;
       }
 
       setImportRows(rows);
+      const priced = rows.filter((r) => hasPrice(r.price1kg)).length;
       const label =
         source === "ai" ? "AI" : source === "inventory" ? "محلل المخزون" : "قواعد ذكية";
-      showToast(`${label}: ${rows.length} صنف (الكمية من المتبقي/الرصيد — الأسعار مش في التقرير ده)`);
+      showToast(
+        priced
+          ? `${label}: ${rows.length} صنف — ${priced} بسعر كيلو مُتعرَّف (كمية ≠ سعر)`
+          : `${label}: ${rows.length} صنف (كمية/رصيد — مفيش عمود سعر في الملف)`
+      );
     } catch (err) {
       console.error(err);
       alert("تعذر قراءة الملف.");
@@ -988,9 +1102,12 @@ function App() {
       if (existing) {
         const entry = {
           ...existing,
-          // update quantity from sheet
-          quantity: row.quantity !== null && row.quantity !== undefined ? Number(row.quantity) || 0 : existing.quantity,
-          // only overwrite prices when the sheet actually has them
+          // Order sheets: update prices only — don't replace warehouse stock with order qty
+          quantity: row._skipStock
+            ? existing.quantity
+            : row.quantity !== null && row.quantity !== undefined
+              ? Number(row.quantity) || 0
+              : existing.quantity,
           price1kg: hasPrice(row.price1kg) ? Number(row.price1kg) : existing.price1kg,
           price10kg: hasPrice(row.price10kg) ? Number(row.price10kg) : existing.price10kg,
           price30kg: hasPrice(row.price30kg) ? Number(row.price30kg) : existing.price30kg,
@@ -1003,6 +1120,7 @@ function App() {
           ...row,
           id: uid("p"),
           price1kg: hasPrice(row.price1kg) ? row.price1kg : 0,
+          quantity: row._skipStock ? 0 : row.quantity,
         });
         next.push(entry);
       }
@@ -1386,10 +1504,10 @@ function App() {
                         <tr>
                           <th>المنتج</th>
                           <th>التصنيف</th>
-                          <th>١ كجم</th>
-                          <th>١٠ كجم</th>
-                          <th>٣٠ كجم</th>
-                          <th>الكمية</th>
+                          <th>سعر ١ كجم</th>
+                          <th>سعر ١٠ كجم</th>
+                          <th>سعر ٣٠ كجم</th>
+                          <th>الكمية (كجم)</th>
                           <th>الحالة</th>
                         </tr>
                       </thead>
